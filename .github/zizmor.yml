@@ -1,10 +1,10 @@
-# Our own workflows and actions follow a ref (main, or agentic-job's release
-# tag) rather than a commit; everyone else's stay pinned by commit.
+# Every action and reusable workflow of another repository, cgwalters'
+# agentic-job and this repository's own tailscale action included, is
+# pinned by commit: zizmor's hash-pin for all of them.
 rules:
   unpinned-uses:
     config:
       policies:
-        "cgwalters-forge/*": ref-pin
         "*": hash-pin
   # Suggests `$/` for every local action, ci.yml's included; we keep `./`
   # (./.agentic-job-source is another repository's checkout anyway).

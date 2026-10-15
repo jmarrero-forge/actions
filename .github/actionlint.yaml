@@ -3,3 +3,11 @@
 self-hosted-runner:
   labels:
     - ubuntu-26.04
+paths:
+  # The wrappers check out this repository's tailscale action at the commit
+  # they run at; GitHub exposes the executing reusable workflow's source in
+  # these job fields, which actionlint 1.7.12 does not know (as in
+  # agentic-job's own actionlint.yaml).
+  '.github/workflows/jmarrero-{agentic-job,review}.yml':
+    ignore:
+      - '^property "workflow_(repository|sha)" is not defined in object type \{check_run_id: number; container: .*; status: string\}$'

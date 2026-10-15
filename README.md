@@ -1,28 +1,51 @@
 # actions
 
-GitHub Actions for cgwalters-forge and bootc-dev workflows, one per
-directory, used as `cgwalters-forge/actions/<name>@main`. Work items are
-this repository's issues.
+jmarrero-forge's fork of
+[cgwalters-forge/actions](https://github.com/cgwalters-forge/actions):
+GitHub Actions for agent runs, one per directory, plus the two reusable
+workflows below, with jmarrero-forge's deployment settings in place of
+cgwalters'. Callers pin them by commit.
 
 | Action | Status | Roadmap |
 | --- | --- | --- |
 | [lint](lint/README.md) | actionlint, zizmor and the runner-label policy; this repository's CI calls it | Called from each forge repository's CI |
-| [tailscale](tailscale/README.md) | Settings by organization; CI runs its unit tests and checks the socket and CLI are closed after a join that fails, no real join (no tailnet credentials here) | Replace devspace.yml's and agent.yml's tailscale/github-action steps; take over the RHEL prerequisites |
+| [tailscale](tailscale/README.md) | Settings by organization; the jmarrero-forge entry takes its client id and tags from the caller's inputs. CI runs its unit tests and checks the socket and CLI are closed after a join that fails, no real join (no tailnet credentials here) | Fill in jmarrero-forge's entry once its OIDC client exists |
 
-## cgwalters-agentic-job
+## jmarrero-agentic-job
 
-One reusable workflow is here too:
-[cgwalters-agentic-job](.github/workflows/cgwalters-agentic-job.yml), an
-agent run of cgwalters-forge/agentic-job with this deployment's tailnet
-join, inference proxy, runner, agent and model. Our repositories call it
-at main, which is the one `job_workflow_ref` the inference broker and the
-tailnet have to admit.
+[jmarrero-agentic-job](.github/workflows/jmarrero-agentic-job.yml) is an
+agent run of cgwalters-forge/agentic-job, pinned by the commit of one
+release, with jmarrero-forge's tailnet join, inference proxy, runner and
+agent. It is upstream's cgwalters-agentic-job with every fallback to
+cgwalters' deployment removed: the agent is `claude` (or the scripted
+`fake`, which needs none of the rest), and a real agent needs the calling
+repository's variables below, or the matching inputs. A missing one fails
+the run in its first job, naming it.
+
+| Variable | |
+| --- | --- |
+| `AGENT` | `claude` (the default) or `fake` |
+| `AGENT_MODEL` | optional, the model as the proxy serves it; empty for Claude Code's default |
+| `INFERENCE_URL`, `INFERENCE_AUDIENCE` | the proxy, and the audience of the run's GitHub identity token there |
+| `APPLY_ENVIRONMENT` | the environment gating apply, unless the caller passes `apply-environment` |
+| `TAILSCALE_OAUTH_CLIENT_ID`, `TAILSCALE_TAGS` | the tailnet's OIDC client and node tags, for the join a real agent makes |
+| `AGENT_RUNNER`, `AGENT_CONFIG` | optional, as upstream |
 
 A repository gets agent runs with the workflow below, a bounds file at
 `.github/agentic-job/dispatch.toml` (and `fix.toml` for the `fix` kind), a
 runner configuration at `.github/agentic-job/hosted.toml`, and an
-environment that gates the apply token; cgwalters-forge/tracker has all four
-to copy. The file's header says what else a caller may set.
+environment that gates the apply token; jmarrero-forge/tracker has all four.
+The file's header says what else a caller may set.
+
+The write token is the bot's PAT, stored only as the secret
+`SAFE_OUTPUTS_PAT` of that environment (`agent-apply`), never as a
+repository or organization secret. The caller still names it, as below,
+but outside the environment the name resolves to nothing: only apply's
+job, which runs in the environment, gets the PAT, to push to the bot's
+fork and open the pull request. Everything else that would take
+`SAFE_OUTPUTS_PAT` (policy's status comment, the session line, apply's
+conclusion) gets an empty value and writes with the job token instead, so
+it can comment only in the calling repository.
 
 ```yaml
 name: dispatch
@@ -39,7 +62,7 @@ concurrency:
   group: dispatch-${{ inputs.kind }}-${{ inputs.repo }}-${{ inputs.item }}
 jobs:
   run:
-    uses: cgwalters-forge/actions/.github/workflows/cgwalters-agentic-job.yml@main
+    uses: jmarrero-forge/actions/.github/workflows/jmarrero-agentic-job.yml@COMMIT
     permissions: {contents: read, issues: write, pull-requests: write, actions: read, id-token: write}
     with:
       task: ${{ inputs.task }}
@@ -48,70 +71,55 @@ jobs:
       kind: ${{ inputs.kind }}
       apply-environment: agent-apply
     secrets:
-      SAFE_OUTPUTS_PAT: ${{ secrets.CGWALTERS_BOT_PAT }}
+      SAFE_OUTPUTS_PAT: ${{ secrets.SAFE_OUTPUTS_PAT }}
 ```
 
 ## Review
 
-[cgwalters-review](.github/workflows/cgwalters-review.yml) is the reusable
-event-review wrapper. It composes agentic-job **v0.2.0**'s policy, check,
-apply and review helpers because its review workflow does not yet expose a
-network hook. It adds our tailnet join and defaults: opencode,
-`praxis/gpt-6.1-sol`, `ubuntu-26.04`, and the dispatch wrapper's inference
-URL and audience. It has **no inputs**. Repository/organization variables
-`AGENT`, `AGENT_MODEL`, `AGENT_RUNNER` (JSON), `INFERENCE_URL`,
-`INFERENCE_AUDIENCE`, `AGENT_CONFIG`, `AGENT_CONFIG_REPO` and
-`AGENT_CONFIG_PATH` select owner-controlled configuration. Set the last
-two for agents needing external configuration; there is no hard-coded
-configuration repository. `AGENT_CONFIG` otherwise uses the pinned
-agentic-job hosted configuration.
+[jmarrero-review](.github/workflows/jmarrero-review.yml) is the reusable
+event-review wrapper. It composes agentic-job's policy, check, apply and
+review helpers at the same commit as jmarrero-agentic-job, because
+agentic-job's own review workflow joins cgwalters' tailnet, which has no
+jmarrero-forge entry. It has **no inputs** and no fallbacks: the
+variables `AGENT_REVIEW`, `AGENT_MODEL`, `INFERENCE_URL`, `INFERENCE_AUDIENCE`,
+`TAILSCALE_OAUTH_CLIENT_ID` and `TAILSCALE_TAGS` configure it, as above,
+and without `AGENT_REVIEW` the run fails in policy rather than have the scripted
+agent post a verdict nobody made. `AGENT_RUNNER` (JSON) and `AGENT_CONFIG`
+are optional.
 
 Call it from the same `pull_request_target` and `issue_comment` events and
 job condition as [this repository's caller](.github/workflows/review.yml),
-replacing the job's `uses` with:
+with:
 
 ```yaml
-uses: cgwalters-forge/actions/.github/workflows/cgwalters-review.yml@main
+uses: jmarrero-forge/actions/.github/workflows/jmarrero-review.yml@COMMIT
 ```
 
-Keep that caller's six permission grants. Optional `SAFE_OUTPUTS_PAT` is
-forwarded explicitly, only to apply; it never reaches the agent or the real
-review submission. Keep `workflow/review.toml`, `workflow/review-command.toml`
+Keep that caller's six permission grants. `AGENT_REVIEW` is a variable of
+its own so that turning on dispatched runs with `AGENT` does not also turn
+on reviews, which the broker may not admit. The callers here pass no
+secret: apply posts the review comment with the job token. Keep `workflow/review.toml`, `workflow/review-command.toml`
 and `workflow/review.md` on the caller's base branch. Automatic reviews admit
-non-draft owner/member/collaborator PRs, preserving upstream's association
-rule for all authors. Otherwise-unassociated bots wait unless `REVIEW_BOT_IDS`
-lists their numeric IDs **and** the bounds admit their logins (including
-Dependabot). Use a JSON array of numbers; Actions also coerces string IDs.
-`/review` still requires write access through event policy.
-Only admitted agent jobs enter per-PR concurrency; new automatic events
-cancel the old agent, comments do not. The head is data inside the sandbox,
-never executed by a privileged step. Each review is bounded to 150 requests,
-500 AIC and 75 agent minutes.
+non-draft owner/member/collaborator PRs. Otherwise-unassociated bots wait
+unless `REVIEW_BOT_IDS` lists their numeric IDs **and** the bounds admit
+their logins (including Dependabot). `/review` still requires write access
+through event policy. Each review is bounded to 150 requests, 500 AIC and
+75 agent minutes.
 
 `AGENT_REAL_REVIEWS=true` opts into checked APPROVE/REQUEST_CHANGES
 submission with the job token, at the admitted head; unset is off. Enable
-GitHub Actions' permission to create/approve PRs for this feature. A stale
-head, cancellation or failed check cannot produce a new approval. The
-compatibility `review` status is not a merge gate or human approval.
+GitHub Actions' permission to create/approve PRs for this feature. The
+compatibility `review` status is not a merge gate or human approval. The
+broker and the tailnet must admit this wrapper's `job_workflow_ref`.
+`just test-review` checks the wrapper's admission and publication
+boundaries; live tailnet joins and GitHub review writes are not exercised
+locally.
 
-Before migrating tracker (a separate repository), admit this wrapper's
-`job_workflow_ref` in the tailnet federation and inference broker, then
-replace its review caller's `uses` as above and exercise a real review and
-a synchronize cancellation. No ACL, OAuth or broker policy is changed here;
-record those deployment changes in the private wiki when made. Removing the
-deployment-specific pieces from agentic-job is a separate follow-up.
-`just test-review` checks the wrapper's admission and publication boundaries;
-live tailnet joins and GitHub review writes are not exercised locally.
-
-Runs may edit `.github/` here, so pull requests are reviewed by
-cgwalters-forge/agentic-job's [review workflow](.github/workflows/review.yml),
-called as in its `docs/review.md`, with this repository's bounds and task
-in [workflow/](workflow/review.toml). The ruleset on `main` is to require its
-approval, dismissed when new commits are pushed; the approval is submitted
-only with the repository variable `AGENT_REAL_REVIEWS=true`, beside the
-agent and inference variables its `docs/review.md` lists. Without
-`.github/agentic-job/merge.toml` the reviewer is told a person approves
-after it.
+This repository's own [review workflow](.github/workflows/review.yml)
+calls the wrapper with its bounds and task in
+[workflow/](workflow/review.toml), and stays off until the repository
+variable `AGENT_REVIEW` is set. Without `.github/agentic-job/merge.toml` the
+reviewer is told a person approves after it.
 
 Licensed under either of [Apache-2.0](LICENSE-APACHE) or
 [MIT](LICENSE-MIT), at your option.

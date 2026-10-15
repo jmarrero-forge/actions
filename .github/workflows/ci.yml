@@ -68,7 +68,7 @@ jobs:
         run: node sandbox-share/check.mjs
       - name: tailscale unit tests
         run: node --test tailscale/*.test.mjs
-      - name: cgwalters-agentic-job unit tests
+      - name: jmarrero-agentic-job unit tests
         run: node --test .github/workflows/*.test.mjs
       # tailscale without a tailnet: with no id-token permission the login
       # fails after tailscaled started (and after the job user reached its

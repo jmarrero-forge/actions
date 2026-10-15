@@ -3,7 +3,7 @@ const { readFileSync } = require('node:fs');
 const { test } = require('node:test');
 const { runInNewContext } = require('node:vm');
 
-const workflow = readFileSync('.github/workflows/cgwalters-review.yml', 'utf8');
+const workflow = readFileSync('.github/workflows/jmarrero-review.yml', 'utf8');
 const jobs = Object.fromEntries([...workflow.matchAll(/^  ([a-z]+):\n([\s\S]*?)(?=^  [a-z]+:\n|$(?![\s\S]))/gm)]
   .map(([, name, body]) => [name, body]));
 
@@ -60,13 +60,16 @@ test('trusted source only, one network join before dropping root, no post-agent 
   const steps = [...jobs.agent.matchAll(/^      - (?:uses: ([^\s]+)|name: (.+)|id: (.+))/gm)]
     .map(([, uses, name, id]) => uses || name || id);
   assert.deepEqual(steps.slice(2), [
-    './.agentic-job-source/prepare', 'Join the tailnet', './.agentic-job-source/secure-host', 'run',
+    './.agentic-job-source/prepare', "This workflow's own repository and commit", 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
+    'Join the tailnet', './.agentic-job-source/secure-host', 'run',
   ]);
   assert.match(jobs.agent, /ref: \$\{\{ needs.policy.outputs.ref \}\}/);
   assert.doesNotMatch(jobs.agent, /(?:pull-requests|contents|issues): write|secrets\./);
   for (const name of ['policy', 'check', 'apply']) {
-    assert.match(jobs[name], new RegExp(`uses: [^\\n]+/${name}\\.yml@v0\\.2\\.0`));
+    assert.match(jobs[name], new RegExp(`uses: cgwalters-forge/agentic-job/\\.github/workflows/${name}\\.yml@[0-9a-f]{40} # v\\d+\\.\\d+\\.\\d+\\n`));
   }
+  assert.match(jobs.agent, /\n {8}uses: \.\/\.jmarrero-actions\/tailscale\n/);
+  assert.match(jobs.agent, /\n {10}repository: \$\{\{ job\.workflow_repository \}\}\n {10}ref: \$\{\{ job\.workflow_sha \}\}\n {10}path: \.jmarrero-actions\n/);
   for (const [name, body] of Object.entries(jobs)) {
     if (name !== 'apply') assert.doesNotMatch(body, /secrets\./);
   }
@@ -81,4 +84,12 @@ test('real reviews are opt-in and use only the checked artifact at the admitted 
   assert.match(jobs.apply, /!cancelled\(\)[^\n]+needs.submit.outputs.review-url == ''/);
   assert.match(jobs.status, /needs.agent.result != 'cancelled'/);
   assert.match(jobs.status, /await reportStatus\(process.env, github, core\)/);
+});
+
+test('no fallback to another deployment: the variables or a failed policy', () => {
+  assert.doesNotMatch(workflow, /100\.121\.|praxis|cgwalters-bot|uses: cgwalters-forge\/actions|AGENT_CONFIG_REPO|AGENT_CONFIG_PATH/);
+  for (const [input, name] of [['agent', 'AGENT_REVIEW'], ['model', 'AGENT_MODEL'], ['inference-url', 'INFERENCE_URL'], ['inference-audience', 'INFERENCE_AUDIENCE']]) {
+    assert.match(jobs.policy, new RegExp(`\\n {6}${input}: \\$\\{\\{ vars\\.${name} \\}\\}\\n`), input);
+  }
+  assert.match(jobs.agent, /\n {10}oauth-client-id: \$\{\{ vars\.TAILSCALE_OAUTH_CLIENT_ID \}\}\n {10}tags: \$\{\{ vars\.TAILSCALE_TAGS \}\}\n/);
 });

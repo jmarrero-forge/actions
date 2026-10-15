@@ -1,7 +1,13 @@
-# Composed from agentic-job v0.2.0's review.yml: keep event policy and
+# Composed from agentic-job v0.3.0's review.yml: keep event policy and
 # publication semantics there in sync when updating the three pinned calls.
+# It is cgwalters-forge/actions' cgwalters-review.yml with jmarrero-forge's
+# tailnet join and no fallback to cgwalters' broker, model or agent: the
+# calling repository's variables AGENT_REVIEW, AGENT_MODEL, INFERENCE_URL
+# and INFERENCE_AUDIENCE, and TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_TAGS
+# for the join, configure it, and without AGENT_REVIEW the run fails in
+# policy rather than have a scripted agent post a verdict nobody made.
 # No dispatcher inputs: identity/configuration comes from repository variables.
-name: cgwalters-review
+name: jmarrero-review
 on:
   workflow_call:
     secrets:
@@ -20,7 +26,7 @@ jobs:
           (github.event.pull_request.user.type == 'Bot' && startsWith(vars.REVIEW_BOT_IDS, '[') &&
             contains(fromJSON(vars.REVIEW_BOT_IDS || '[]'), github.event.pull_request.user.id)))) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/review'))
-    uses: cgwalters-forge/agentic-job/.github/workflows/policy.yml@v0.2.0
+    uses: cgwalters-forge/agentic-job/.github/workflows/policy.yml@b6a30d3d38dfcd7403fbba647949d424dd598641 # v0.3.0
     permissions:
       contents: read
     with:
@@ -36,13 +42,13 @@ jobs:
       notify: none
       allow: ${{ github.event_name == 'issue_comment' && 'workflow/review-command.toml' || 'workflow/review.toml' }}
       config: ${{ vars.AGENT_CONFIG || '.agentic-job-source/.github/agentic-job/hosted.toml' }}
-      agent: ${{ vars.AGENT || 'opencode' }}
-      model: ${{ vars.AGENT_MODEL || 'praxis/gpt-6.1-sol' }}
-      # Repository names are configured by the owner, never dispatch inputs.
-      agent-config-repo: ${{ (vars.AGENT == '' || vars.AGENT == 'opencode' || vars.AGENT == 'vibe') && vars.AGENT_CONFIG_REPO || '' }}
-      agent-config-path: ${{ (vars.AGENT == '' || vars.AGENT == 'opencode' || vars.AGENT == 'vibe') && vars.AGENT_CONFIG_PATH || '' }}
-      inference-url: ${{ vars.INFERENCE_URL || 'http://100.121.0.115:18080' }}
-      inference-audience: ${{ vars.INFERENCE_AUDIENCE || 'praxis-credential-broker' }}
+      # No fallbacks: without the variables the run fails in policy. The
+      # reviewing agent is a variable of its own, so that turning on
+      # dispatched runs (AGENT) does not also turn on reviews.
+      agent: ${{ vars.AGENT_REVIEW }}
+      model: ${{ vars.AGENT_MODEL }}
+      inference-url: ${{ vars.INFERENCE_URL }}
+      inference-audience: ${{ vars.INFERENCE_AUDIENCE }}
       max-requests: '150'
       budget: '500'
       timeout: '75'
@@ -93,6 +99,8 @@ jobs:
       exit: ${{ steps.run.outputs.exit }}
       over-budget: ${{ steps.run.outputs.over-budget }}
       safe-outputs-artifact-id: ${{ steps.run.outputs.safe-outputs-artifact-id }}
+      # This job's ID, for the review's footer to link (agentic-job#592).
+      job: ${{ job.check_run_id }}
     steps:
       # The trusted base, never the head; source actions come from policy's pin.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -109,11 +117,33 @@ jobs:
         with:
           binary-artifact-id: ${{ needs.policy.outputs.binary-artifact-id }}
           policy-artifact-id: ${{ needs.policy.outputs.policy-artifact-id }}
-      # One privileged network step, before secure-host drops root. The
-      # tailnet and broker must admit this wrapper's job_workflow_ref.
-      - name: Join the tailnet
-        uses: cgwalters-forge/actions/tailscale@d7bfa158217182d8c0b0b775189dcf91a6afcdde
+      # One privileged network step, before secure-host drops root: this
+      # repository's tailscale action at the commit this file runs at, as
+      # jmarrero-agentic-job.yml does. The tailnet and broker must admit
+      # this wrapper's job_workflow_ref. The jmarrero-forge entry of
+      # tailnets.json leaves the client id and tags to the calling
+      # repository's variables.
+      - name: This workflow's own repository and commit
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          EXPECTED_REPOSITORY: jmarrero-forge/actions
+        run: |
+          echo "$WORKFLOW_REPOSITORY at $WORKFLOW_SHA"
+          [[ "$WORKFLOW_REPOSITORY" == "$EXPECTED_REPOSITORY" && "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo "::error::this workflow is not running from $EXPECTED_REPOSITORY at a full commit"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .jmarrero-actions
+          sparse-checkout: tailscale
+          persist-credentials: false
+      - name: Join the tailnet
+        uses: ./.jmarrero-actions/tailscale
+        with:
+          oauth-client-id: ${{ vars.TAILSCALE_OAUTH_CLIENT_ID }}
+          tags: ${{ vars.TAILSCALE_TAGS }}
           hostname: agentic-job-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: ./.agentic-job-source/secure-host # zizmor: ignore[self-repository] Policy-selected pinned source, never head code.
         with:
@@ -130,7 +160,7 @@ jobs:
     if: ${{ !cancelled() && needs.policy.result == 'success' && needs.agent.outputs.safe-outputs-artifact-id != '' }}
     permissions:
       contents: read
-    uses: cgwalters-forge/agentic-job/.github/workflows/check.yml@v0.2.0
+    uses: cgwalters-forge/agentic-job/.github/workflows/check.yml@b6a30d3d38dfcd7403fbba647949d424dd598641 # v0.3.0
     with:
       policy: ${{ toJSON(needs.policy.outputs) }}
       safe-outputs-artifact-id: ${{ needs.agent.outputs.safe-outputs-artifact-id }}
@@ -171,6 +201,7 @@ jobs:
           CHECK_RESULT: ${{ needs.check.result }}
           VERDICT: ${{ needs.check.outputs.verdict }}
           AGENT_EXIT: ${{ needs.agent.outputs.exit }}
+          AGENT_JOB: ${{ needs.agent.outputs.job }}
           REAL_REVIEWS: ${{ vars.AGENT_REAL_REVIEWS }}
         with:
           result-encoding: string
@@ -183,7 +214,7 @@ jobs:
   apply:
     needs: [policy, agent, check, submit]
     if: ${{ !cancelled() && needs.policy.result == 'success' && needs.submit.outputs.review-url == '' }}
-    uses: cgwalters-forge/agentic-job/.github/workflows/apply.yml@v0.2.0
+    uses: cgwalters-forge/agentic-job/.github/workflows/apply.yml@b6a30d3d38dfcd7403fbba647949d424dd598641 # v0.3.0
     secrets:
       SAFE_OUTPUTS_PAT: ${{ secrets.SAFE_OUTPUTS_PAT }}
     permissions:
