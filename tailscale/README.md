@@ -31,7 +31,9 @@ The job needs `permissions: id-token: write` for the OIDC login.
 What a join needs is in [tailnets.json](tailnets.json), keyed by
 `github.repository_owner`; none of it is secret. An organization with no
 entry fails before joining, even when the inputs below are given: add an
-entry for it. The audience is `api.tailscale.com/` followed by the
+entry for it. An entry may leave `oauth-client-id` and `tags` empty for
+the caller to pass as inputs; a join with either still empty fails before
+it starts. The audience is `api.tailscale.com/` followed by the
 client ID. The node always joins with `--accept-dns=false`, which leaves
 the runner's DNS alone.
 

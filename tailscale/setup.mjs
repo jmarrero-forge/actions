@@ -10,6 +10,14 @@ export function settings(owner, overrides = {}) {
   for (const key of ['oauth-client-id', 'tags', 'proxy']) {
     if (overrides[key]) result[key] = overrides[key];
   }
+  // An entry may leave these empty for the caller to pass as inputs, from
+  // values only the tailnet's admin has; joining without them would fail
+  // later with a less helpful error from Tailscale.
+  for (const key of ['oauth-client-id', 'tags']) {
+    if (!result[key]) {
+      throw new Error(`No ${key} for GitHub organization ${owner}: set it in tailscale/tailnets.json or pass the ${key} input.`);
+    }
+  }
   result.audience = overrides.audience || `api.tailscale.com/${result['oauth-client-id']}`;
   for (const value of Object.values(result)) {
     if (/[\r\n]/.test(value)) throw new Error('Tailnet settings must be single-line values');
