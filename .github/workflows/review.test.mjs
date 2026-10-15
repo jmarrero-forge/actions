@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-// The review gate: a thin caller of agentic-job's review.yml, with this
-// repository's copies of the bounds and the task, which that workflow reads
-// from the base branch (agentic-job's docs/review.md, "Another repository").
+// The review gate: a thin caller of this repository's jmarrero-review.yml,
+// which composes agentic-job's review pieces with our tailnet join, with
+// this repository's copies of the bounds and the task, which that workflow
+// reads from the base branch (agentic-job's docs/review.md, "Another
+// repository").
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
 const caller = read('./review.yml');
 
@@ -12,13 +14,13 @@ const caller = read('./review.yml');
 // checks out or runs the head and no secret is handed down. So the caller
 // is pinned whole, comments aside: one job, no steps, no secrets, and only
 // the triggers and grants agentic-job's docs/review.md gives a caller. The
-// `if:` admits every pull request event and `/review` comments; the called
-// workflow narrows both (authors, and who may comment).
+// `if:` admits every pull request event and `/review` comments once
+// AGENT_REVIEW is set; the called workflow narrows both (authors, and who may comment).
 test('the caller runs nothing of the head and passes no secret', () => {
   const lines = caller.split('\n')
     .map(line => line.replace(/ # zizmor: .*$/, ''))
     .filter(line => line.trim() && !line.trim().startsWith('#'));
-  assert.equal(lines.join('\n').replace(/@v\d+\.\d+\.\d+$/m, '@TAG'), `name: review
+  assert.equal(lines.join('\n'), `name: review
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -28,9 +30,9 @@ permissions: {}
 jobs:
   review:
     if: >-
-      github.event_name == 'pull_request_target' ||
-      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review'))
-    uses: cgwalters-forge/agentic-job/.github/workflows/review.yml@TAG
+      vars.AGENT_REVIEW != '' && (github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review')))
+    uses: ./.github/workflows/jmarrero-review.yml
     permissions:
       contents: read
       issues: read
@@ -40,14 +42,15 @@ jobs:
       statuses: write`);
 });
 
-// One agentic-job tag across our workflows, which dependabot moves together.
-test('review.yml is called at the tag the agent job calls', () => {
-  const refs = [...caller.matchAll(/uses: (\S+)@(\S+)/g)];
-  assert.deepEqual(refs.map(match => match[1]), ['cgwalters-forge/agentic-job/.github/workflows/review.yml']);
-  const tags = [...read('./cgwalters-agentic-job.yml').matchAll(/uses: cgwalters-forge\/agentic-job\/\S+@(\S+)/g)];
-  assert.ok(tags.length > 0);
-  for (const [, tag] of tags) assert.equal(refs[0][2], tag);
-  assert.match(refs[0][2], /^v\d+\.\d+\.\d+$/);
+// One agentic-job release across our wrappers, which dependabot moves together.
+test('the review wrapper calls agentic-job at the commit the dispatch wrapper calls', () => {
+  const commits = file => [...read(file).matchAll(/uses: cgwalters-forge\/agentic-job\/\S+@(\S+)/g)].map(match => match[1]);
+  const review = commits('./jmarrero-review.yml');
+  const dispatch = commits('./jmarrero-agentic-job.yml');
+  assert.equal(review.length, 3);
+  assert.ok(dispatch.length > 0);
+  assert.deepEqual(new Set([...review, ...dispatch]), new Set([dispatch[0]]));
+  assert.match(dispatch[0], /^[0-9a-f]{40}$/);
 });
 
 // The bounds, comments aside: comment-only outputs for this repository's

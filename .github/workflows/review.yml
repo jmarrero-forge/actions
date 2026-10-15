@@ -9,15 +9,18 @@ on:
 permissions: {}
 jobs:
   review:
+    # Off until the repository variable AGENT_REVIEW names the reviewing
+    # agent: the wrapper has no fallback agent or broker, and would fail
+    # every pull request's review in policy until a broker admits it.
     if: >-
-      github.event_name == 'pull_request_target' ||
-      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review'))
+      vars.AGENT_REVIEW != '' && (github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review')))
     # Base-owned policy; the head is fetched only as data inside the sandbox.
-    # agentic-job is referenced by release tag: following main failed runs that
-    # spanned a merge there (cgwalters-forge/tracker#544). Dependabot proposes
-    # newer tags. The permissions below go to whatever that tag names, so
-    # agentic-job's release process is part of this gate.
-    uses: cgwalters-forge/agentic-job/.github/workflows/review.yml@v0.2.0
+    # The wrapper of this repository, at the base's commit, composes
+    # agentic-job at a commit it pins with jmarrero-forge's tailnet join:
+    # agentic-job's own review.yml joins cgwalters' tailnet, which has no
+    # entry for this organization.
+    uses: ./.github/workflows/jmarrero-review.yml
     permissions:
       contents: read
       issues: read

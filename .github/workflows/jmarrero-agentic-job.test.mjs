@@ -2,42 +2,58 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-const workflow = readFileSync(new URL('./cgwalters-agentic-job.yml', import.meta.url), 'utf8');
+const workflow = readFileSync(new URL('./jmarrero-agentic-job.yml', import.meta.url), 'utf8');
 
-// agentic-job is called at one release tag: check, apply, prepare and run
-// refuse calls that resolved to different commits, which following main
-// produced for runs spanning an agentic-job merge (tracker#544). Our own
-// tailscale action still follows main.
-test('agentic-job is called at one release tag, our tailscale at main', () => {
-  const refs = [...workflow.matchAll(/uses: cgwalters-forge\/(\S+)@(\S+)/g)];
+// agentic-job is called at one release, by its commit: check, apply,
+// prepare and run refuse calls that resolved to different commits, which
+// following main produced for runs spanning an agentic-job merge
+// (cgwalters-forge/tracker#544), and a tag can be moved. Our own tailscale
+// action, which holds the tailnet join's credentials, comes from the commit
+// this file runs at, so nothing pins a commit of this repository.
+test('agentic-job is called at one release commit, our tailscale at this file\'s', () => {
+  const refs = [...workflow.matchAll(/uses: ([a-z-]+-forge\/\S+)@(\S+)/g)];
   assert.deepEqual(refs.map(match => match[1]), [
-    'agentic-job/.github/workflows/policy.yml',
-    'actions/tailscale',
-    'agentic-job/.github/workflows/check.yml',
-    'agentic-job/.github/workflows/apply.yml',
+    'cgwalters-forge/agentic-job/.github/workflows/policy.yml',
+    'cgwalters-forge/agentic-job/.github/workflows/check.yml',
+    'cgwalters-forge/agentic-job/.github/workflows/apply.yml',
   ]);
-  const tags = new Set(refs.filter(([, path]) => path.startsWith('agentic-job/')).map(match => match[2]));
-  assert.equal(tags.size, 1);
-  assert.match([...tags][0], /^v\d+\.\d+\.\d+$/);
-  assert.equal(refs.find(([, path]) => path === 'actions/tailscale')[2], 'main');
+  const agent = job('agent');
+  assert.match(agent, /\n {10}WORKFLOW_REPOSITORY: \$\{\{ job\.workflow_repository \}\}\n {10}WORKFLOW_SHA: \$\{\{ job\.workflow_sha \}\}\n {10}EXPECTED_REPOSITORY: jmarrero-forge\/actions\n/);
+  assert.match(agent, /\n {10}repository: \$\{\{ job\.workflow_repository \}\}\n {10}ref: \$\{\{ job\.workflow_sha \}\}\n {10}path: \.jmarrero-actions\n {10}sparse-checkout: tailscale\n {10}persist-credentials: false\n/);
+  assert.match(agent, /- name: Join the tailnet\n[^\n]*\n {8}uses: \.\/\.jmarrero-actions\/tailscale\n/);
+  for (const [, path, ref] of refs) assert.match(ref, /^[0-9a-f]{40}$/, path);
+  const calls = [...workflow.matchAll(/uses: cgwalters-forge\/agentic-job\/\S+@([0-9a-f]{40}) # (v\d+\.\d+\.\d+)\n/g)];
+  assert.equal(calls.length, 3);
+  assert.equal(new Set(calls.map(match => `${match[1]} ${match[2]}`)).size, 1);
   assert.doesNotMatch(workflow, /PINNED_SHA/);
   assert.match(workflow, /\n {10}EXPECTED_REPOSITORY: cgwalters-forge\/agentic-job\n/);
 });
 
-// Dependabot moves the tag, all three calls in one pull request, without
-// the third-party cooldown.
-test('dependabot proposes new agentic-job tags as one group', () => {
+// Nothing falls back to cgwalters' deployment: his broker, its audience,
+// his model or his opencode configuration.
+test('no default names another deployment', () => {
+  assert.doesNotMatch(workflow, /100\.121\.|praxis|cgwalters-bot|uses: cgwalters-forge\/actions|AGENT_CONFIG_REPO|AGENT_CONFIG_PATH/);
+  assert.match(workflow, /\n {10}AGENT: \$\{\{ inputs\.agent \|\| vars\.AGENT \|\| 'claude' \}\}\n/);
+  assert.match(workflow, /\n {10}AGENT_MODEL: \$\{\{ inputs\.model \|\| vars\.AGENT_MODEL \}\}\n/);
+  assert.match(workflow, /\n {10}INFERENCE_URL: \$\{\{ inputs\.inference-url \|\| vars\.INFERENCE_URL \}\}\n/);
+  assert.match(workflow, /\n {10}INFERENCE_AUDIENCE: \$\{\{ inputs\.inference-audience \|\| vars\.INFERENCE_AUDIENCE \}\}\n/);
+});
+
+// Dependabot moves the commit, all three calls in one pull request, after
+// the same cooldown as any other third-party action.
+test('dependabot proposes new agentic-job releases as one group', () => {
   const config = readFileSync(new URL('../dependabot.yml', import.meta.url), 'utf8');
   assert.match(config, /\n {6}interval: daily\n/);
   assert.match(config, /\n {6}agentic-job:\n {8}patterns: \["cgwalters-forge\/agentic-job\*"\]\n/);
-  assert.match(config, /\n {6}exclude: \["cgwalters-forge\/agentic-job\*"\]\n/);
+  assert.match(config, /\n {6}default-days: 7\n/);
+  assert.doesNotMatch(config, /exclude:/);
 });
 
-// Third-party actions stay pinned by full commit; dependabot moves them.
+// Every other action is pinned by full commit too; dependabot moves them.
 test('every other action is pinned by full commit', () => {
-  for (const file of ['./cgwalters-agentic-job.yml', './ci.yml', '../../tailscale/action.yml']) {
+  for (const file of ['./jmarrero-agentic-job.yml', './ci.yml', '../../tailscale/action.yml']) {
     const text = readFileSync(new URL(file, import.meta.url), 'utf8');
-    const others = [...text.matchAll(/uses: (?!cgwalters-forge\/|\.\/)(\S+)@(\S+)/g)];
+    const others = [...text.matchAll(/uses: (?!\.\/)(\S+)@(\S+)/g)];
     assert.ok(others.length > 0, file);
     for (const [, name, ref] of others) assert.match(ref, /^[0-9a-f]{40}$/, `${file}: ${name}`);
   }
@@ -57,9 +73,9 @@ async function target(env, { pull = false } = {}) {
   const context = { eventName: 'workflow_call' };
   const environment = {
     TARGET_REPO: 'example/repo', TARGET_ITEM: '7', PROFILE: 'implement', TASK: 'Do it.',
-    SKILLS: 'false', MAX_REQUESTS: '400', AGENT: 'opencode', AGENT_MODEL: 'p/m', AGENT_RUNNER: '"ubuntu-26.04"',
-    INFERENCE_URL: 'http://proxy', INFERENCE_AUDIENCE: 'aud', AGENT_CONFIG_REPO: 'o/c',
-    AGENT_CONFIG_PATH: 'p', APPLY_ENVIRONMENT: 'apply', SESSION: 'false', IDLE_MINUTES: '',
+    SKILLS: 'false', MAX_REQUESTS: '400', AGENT: 'claude', AGENT_MODEL: 'm', AGENT_RUNNER: '"ubuntu-26.04"',
+    INFERENCE_URL: 'http://proxy', INFERENCE_AUDIENCE: 'aud',
+    APPLY_ENVIRONMENT: 'apply', SESSION: 'false', IDLE_MINUTES: '',
     TAILNET_DOMAIN: '', RUN_ID: '123', RUN_ATTEMPT: '2', ...env,
   };
   await new AsyncFunction('core', 'github', 'context', 'process', script)(
@@ -74,19 +90,15 @@ test('skills are off by default and the task keeps its one-line contract', async
   assert.match(outputs.task, /^Profile: implement\. Implement proposes one draft pull request\./);
 });
 
-test('skills turn on only for implement with claude or opencode', async () => {
-  for (const agent of ['claude', 'opencode']) {
-    const outputs = await target({ SKILLS: 'true', AGENT: agent });
-    assert.equal(outputs.skills, 'true');
-    assert.match(outputs.task, /^Profile: implement\. Use the implement skill\. /);
-  }
-  // agentic-job refuses skills for these agents: the input must not fail
-  // their runs.
-  for (const agent of ['fake', 'vibe']) {
-    const outputs = await target({ SKILLS: 'true', AGENT: agent, AGENT_MODEL: 'devstral-small-latest' });
-    assert.equal(outputs.skills, 'false');
-    assert.doesNotMatch(outputs.task, /skill/);
-  }
+test('skills turn on only for implement with claude', async () => {
+  const outputs = await target({ SKILLS: 'true' });
+  assert.equal(outputs.skills, 'true');
+  assert.match(outputs.task, /^Profile: implement\. Use the implement skill\. /);
+  // agentic-job refuses skills for the scripted agent: the input must not
+  // fail its runs.
+  const fake = await target({ SKILLS: 'true', AGENT: 'fake' });
+  assert.equal(fake.skills, 'false');
+  assert.doesNotMatch(fake.task, /skill/);
   for (const [profile, pull] of [['triage', false], ['research', false], ['review', true], ['fix', true]]) {
     const outputs = await target({ SKILLS: 'true', PROFILE: profile }, { pull });
     assert.equal(outputs.skills, 'false', profile);
@@ -103,8 +115,8 @@ test('policy is given skills only from the target job', () => {
 test('max-requests defaults to 400, passes through for a real agent and is 0 for fake', async () => {
   assert.match(workflow, /\n {6}max-requests:\n {8}description: [^\n]*\n {8}type: string\n {8}default: "400"\n/);
   assert.equal((await target({}))['max-requests'], '400');
-  assert.equal((await target({ MAX_REQUESTS: '1000', AGENT: 'claude' }))['max-requests'], '1000');
-  assert.equal((await target({ MAX_REQUESTS: '1', AGENT: 'vibe', AGENT_MODEL: 'devstral-small-latest' }))['max-requests'], '1');
+  assert.equal((await target({ MAX_REQUESTS: '1000' }))['max-requests'], '1000');
+  assert.equal((await target({ MAX_REQUESTS: '1' }))['max-requests'], '1');
   assert.equal((await target({ MAX_REQUESTS: '900', AGENT: 'fake' }))['max-requests'], '0');
 });
 
@@ -138,7 +150,7 @@ test('a run is no session unless asked, and passes policy nothing new', async ()
 });
 
 test('a session names its endpoint from the join hostname and the repository variable', async () => {
-  for (const [agent, idle] of [['opencode', '60'], ['fake', '1'], ['claude', '']]) {
+  for (const [agent, idle] of [['claude', '60'], ['fake', '1'], ['claude', '']]) {
     const outputs = await target({ SESSION: 'true', IDLE_MINUTES: idle, TAILNET_DOMAIN: 'tail-1.ts.net', AGENT: agent });
     assert.equal(outputs.session, 'true');
     assert.equal(outputs['idle-minutes'], idle);
@@ -168,6 +180,8 @@ test('a session without a usable domain, for review, or with idle-minutes out of
 
 test('the tailnet join is for a real agent or a session', () => {
   assert.match(job('agent'), /- name: Join the tailnet\n {8}if: \$\{\{ needs\.target\.outputs\.agent != 'fake' \|\| needs\.target\.outputs\.session == 'true' \}\}\n/);
+  // So are the check and checkout of this repository that the join comes from.
+  assert.equal(job('agent').split("if: ${{ needs.target.outputs.agent != 'fake' || needs.target.outputs.session == 'true' }}").length - 1, 3);
 });
 
 test('the session job posts the endpoint before apply concludes, and only for a session', () => {
@@ -187,9 +201,36 @@ test('the session job posts the endpoint before apply concludes, and only for a 
 
 // GitHub refuses a call with an input the called workflow does not declare,
 // so passing `session` to a policy.yml without it fails every run, session
-// or not. These tags predate agentic-job's listening bridge (its #588):
-// this fails until the calls move past them.
-test('agentic-job is called at a tag whose policy has the session input', () => {
-  const [, tag] = workflow.match(/agentic-job\/\.github\/workflows\/policy\.yml@(\S+)/);
-  assert.ok(!['v0.0.1', 'v0.0.2', 'v0.0.3', 'v0.1.0'].includes(tag), `${tag} has no session input`);
+// or not. Releases before v0.2.0 predate agentic-job's listening bridge
+// (its #588).
+test('agentic-job is called at a release whose policy has the session input', () => {
+  const [, major, minor] = workflow.match(/agentic-job\/\.github\/workflows\/policy\.yml@[0-9a-f]{40} # v(\d+)\.(\d+)\.\d+\n/).map(Number);
+  assert.ok(major > 0 || minor >= 2, `v${major}.${minor} has no session input`);
+});
+
+// Only claude and the scripted agent: the others need configuration and
+// pools this deployment does not have.
+test('agents other than fake and claude are refused', async () => {
+  for (const agent of ['opencode', 'vibe', '', 'Claude']) {
+    await assert.rejects(target({ AGENT: agent }), /AGENT must be fake or claude/, agent);
+  }
+});
+
+// No proxy is assumed: claude names every setting it lacks, before a
+// runner is spent; the scripted agent needs none of them.
+test('claude needs the proxy, its audience and the apply environment; fake needs none', async () => {
+  const none = { INFERENCE_URL: '', INFERENCE_AUDIENCE: ' ', APPLY_ENVIRONMENT: '' };
+  await assert.rejects(target(none),
+    /claude needs the apply-environment input \(or the variable APPLY_ENVIRONMENT\), the inference-url input \(or the variable INFERENCE_URL\), the inference-audience input \(or the variable INFERENCE_AUDIENCE\)/);
+  await assert.rejects(target({ INFERENCE_URL: '' }), /^Error: claude needs the inference-url input \(or the variable INFERENCE_URL\)$/);
+  const fake = await target({ ...none, AGENT: 'fake' });
+  assert.equal(fake['inference-url'], '');
+  assert.equal(fake['inference-audience'], '');
+  assert.equal(fake.model, '');
+});
+
+// The join's client id and tags are the calling repository's variables:
+// the jmarrero-forge entry of tailnets.json leaves them empty.
+test('the tailnet join takes its client and tags from the caller\'s variables', () => {
+  assert.match(job('agent'), /\n {10}oauth-client-id: \$\{\{ vars\.TAILSCALE_OAUTH_CLIENT_ID \}\}\n {10}tags: \$\{\{ vars\.TAILSCALE_TAGS \}\}\n/);
 });
