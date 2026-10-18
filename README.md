@@ -9,7 +9,7 @@ cgwalters'. Callers pin them by commit.
 | Action | Status | Roadmap |
 | --- | --- | --- |
 | [lint](lint/README.md) | actionlint, zizmor and the runner-label policy; this repository's CI calls it | Called from each forge repository's CI |
-| [tailscale](tailscale/README.md) | Settings by organization; the jmarrero-forge entry takes its client id and tags from the caller's inputs. CI runs its unit tests and checks the socket and CLI are closed after a join that fails, no real join (no tailnet credentials here) | Fill in jmarrero-forge's entry once its OIDC client exists |
+| [tailscale](tailscale/README.md) | Settings by organization; the jmarrero-forge and jmarrero entries take their client id and tags from the caller's inputs. CI runs its unit tests and checks the socket and CLI are closed after a join that fails, no real join (no tailnet credentials here) | Fill in jmarrero-forge's entry once its OIDC client exists |
 
 ## jmarrero-agentic-job
 

@@ -28,12 +28,14 @@ test('each setting can be overridden and audience follows an overridden client',
 });
 
 test('an entry with empty settings takes them from the inputs, and fails clearly without', () => {
-  for (const overrides of [{}, { 'oauth-client-id': 'custom' }, { tags: 'tag:custom' }]) {
-    assert.throws(() => settings('jmarrero-forge', overrides), /No (oauth-client-id|tags) for GitHub organization jmarrero-forge/);
+  for (const owner of ['jmarrero-forge', 'jmarrero']) {
+    for (const overrides of [{}, { 'oauth-client-id': 'custom' }, { tags: 'tag:custom' }]) {
+      assert.throws(() => settings(owner, overrides), new RegExp(`No (oauth-client-id|tags) for GitHub organization ${owner}:`));
+    }
+    assert.deepEqual(settings(owner, { 'oauth-client-id': 'custom', tags: 'tag:custom' }), {
+      'oauth-client-id': 'custom', audience: 'api.tailscale.com/custom', tags: 'tag:custom', proxy: '',
+    });
   }
-  assert.deepEqual(settings('jmarrero-forge', { 'oauth-client-id': 'custom', tags: 'tag:custom' }), {
-    'oauth-client-id': 'custom', audience: 'api.tailscale.com/custom', tags: 'tag:custom', proxy: '',
-  });
 });
 
 test('unknown owners and output injection fail clearly', () => {

@@ -120,9 +120,9 @@ jobs:
       # One privileged network step, before secure-host drops root: this
       # repository's tailscale action at the commit this file runs at, as
       # jmarrero-agentic-job.yml does. The tailnet and broker must admit
-      # this wrapper's job_workflow_ref. The jmarrero-forge entry of
-      # tailnets.json leaves the client id and tags to the calling
-      # repository's variables.
+      # this wrapper's job_workflow_ref. The jmarrero-forge and jmarrero
+      # entries of tailnets.json leave the client id and tags to the
+      # calling repository's variables.
       - name: This workflow's own repository and commit
         env:
           WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
