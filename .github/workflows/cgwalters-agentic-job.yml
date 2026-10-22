@@ -1,19 +1,24 @@
-# jmarrero-agentic-job: an agent run of cgwalters-forge/agentic-job with
-# everything that is jmarrero-forge's deployment and not the generic
-# project's: the tailnet join, the inference proxy and its audience, the
-# runner and the agent. It is cgwalters-forge/actions' cgwalters-agentic-job.yml
-# with our values: no default points at cgwalters' broker, tailnet or agent
-# configuration, and the agent is claude (or the scripted fake) only. The
-# README has a caller to copy.
+# cgwalters-agentic-job: an agent run of cgwalters-forge/agentic-job with
+# everything that is this deployment's and not the generic project's: the
+# tailnet join, the inference proxy and its audience, the runner, the agent
+# and its model. Every repository of ours calls this one file at main. Any
+# public repository can call it too, so the inference broker and the
+# tailnet admit its `job_workflow_ref` only with an owner id of ours, and
+# the target job refuses any other owner (admit/owners.json). The README
+# has a caller to copy.
 #
 # The policy, check and apply workflows and the prepare, secure-host and run
-# actions are cgwalters-forge/agentic-job's at one release, pinned by its
-# commit (its docs/workflow.md, "The pieces, and an agent job of your own");
-# the agent job is this file's so that the join can be a step of it. The
-# three calls must name the same commit: check, apply, prepare and run
-# refuse calls that resolved to different commits than the policy call's
-# (cgwalters-forge/tracker#544). Dependabot proposes newer releases as one
-# change.
+# actions are cgwalters-forge/agentic-job's at a release (its
+# docs/workflow.md, "The pieces, and an agent job of your own"); the agent
+# job is this file's so that the join can be a step of it. A release rather
+# than main: following main failed runs that spanned an agentic-job merge,
+# since check, apply, prepare and run refuse calls that resolved to
+# different commits than the policy call's (tracker#544). The release's
+# commit rather than its tag: agentic-job's tags are not protected, so
+# anyone who can push there could move one to a commit that skipped main's
+# review, and it would run here as root and with the apply token (#109).
+# The three calls must name the same commit, with the tag as a comment;
+# dependabot proposes newer ones as one change.
 #
 # Nesting: the caller, this file, then policy.yml, check.yml or apply.yml,
 # none of which calls another workflow: three of the four levels GitHub
@@ -21,12 +26,9 @@
 #
 # What is the deployment's is decided in the target job and nowhere else:
 # an input, else the calling repository's variable of the name the input's
-# description gives, else the default written there. The broker's URL and
-# audience have no default: a real agent needs the variables
-# INFERENCE_URL and INFERENCE_AUDIENCE, and the tailnet join the variables
-# TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_TAGS (tailscale/README.md). The
-# join is this repository's tailscale action at the commit this file runs
-# at, so a caller pins one commit of this repository and nothing more.
+# description gives, else the default written there. A new repository
+# therefore sets nothing; a variable is for trying a model without
+# changing this file.
 #
 # What is the calling repository's stays the caller's: its trigger, run
 # name and concurrency, its bounds (`allow`, `fix-allow`) and runner
@@ -36,7 +38,7 @@
 # `pull-requests: write`, `actions: read` and `id-token: write`, which is
 # the union of the jobs here; each job takes only its own part. `vars` here
 # are the calling repository's.
-name: jmarrero-agentic-job
+name: cgwalters-agentic-job
 
 on:
   workflow_call:
@@ -70,7 +72,7 @@ on:
         type: string
         default: ""
       skills:
-        description: "For implement with claude: install agentic-job's skills (its docs/skills.md) and have the agent follow its implement skill"
+        description: "For implement with claude or opencode: install agentic-job's skills (its docs/skills.md) and have the agent follow its implement skill"
         type: boolean
         default: false
       apply-environment:
@@ -79,11 +81,11 @@ on:
         default: ""
       # Deployment settings, for a caller that must differ; see the header.
       agent:
-        description: "fake or claude; empty: the variable AGENT, else claude"
+        description: "fake, opencode, claude or vibe; empty: the variable AGENT, else opencode"
         type: string
         default: ""
       model:
-        description: "The model, as the proxy serves it; empty: the variable AGENT_MODEL, else the agent's own default"
+        description: "The model, as the proxy serves it (for vibe, a bare Mistral name such as devstral-small-latest); empty: the variable AGENT_MODEL, else our default"
         type: string
         default: ""
       budget:
@@ -103,15 +105,35 @@ on:
         type: string
         default: ""
       runner:
-        description: "The agent job's runner label, as JSON; empty: the variable AGENT_RUNNER, else GitHub's ubuntu-26.04"
+        description: "The agent job's runner label, as JSON; empty: the variable AGENT_RUNNER, else our default"
         type: string
         default: ""
       inference-url:
-        description: "The inference proxy; empty: the variable INFERENCE_URL, which claude requires"
+        description: "The inference proxy; empty: the variable INFERENCE_URL, else ours"
         type: string
         default: ""
       inference-audience:
-        description: "Audience of the run's identity token at the proxy; empty: the variable INFERENCE_AUDIENCE, which claude requires"
+        description: "Audience of the run's identity token at the proxy; empty: the variable INFERENCE_AUDIENCE, else ours, but only with our inference-url: another URL without an audience fails"
+        type: string
+        default: ""
+      agent-config-repo:
+        description: "Where opencode's configuration is; empty: the variable AGENT_CONFIG_REPO, else ours"
+        type: string
+        default: ""
+      agent-config-path:
+        description: "Path of opencode's configuration there; empty: the variable AGENT_CONFIG_PATH, else ours"
+        type: string
+        default: ""
+      # agentic-job's provider-key mode (its #740), passed through as is;
+      # the defaults are agentic-job's, our broker. Not deployment settings,
+      # so no variable: a caller that holds a key sets both, the provider's
+      # API root as inference-url and the key as INFERENCE_API_KEY.
+      inference-register:
+        description: "How the run registers at inference-url: github-oidc (our broker) or api-key"
+        type: string
+        default: github-oidc
+      inference-provider:
+        description: "With api-key, the API the key is for: anthropic (claude) or openai (opencode)"
         type: string
         default: ""
     secrets:
@@ -119,6 +141,10 @@ on:
       # Read by the apply job, and by policy's notify job and the session
       # job for a status comment on an item of another repository.
       SAFE_OUTPUTS_PAT:
+        required: false
+      # With inference-register api-key, the provider's key. Only the agent
+      # job's run step reads it; `run` keeps it from the agent's user.
+      INFERENCE_API_KEY:
         required: false
     outputs:
       pull-request:
@@ -148,7 +174,14 @@ jobs:
       model: ${{ steps.target.outputs.model }}
       inference-url: ${{ steps.target.outputs.inference-url }}
       inference-audience: ${{ steps.target.outputs.inference-audience }}
+      agent-config-repo: ${{ steps.target.outputs.agent-config-repo }}
+      agent-config-path: ${{ steps.target.outputs.agent-config-path }}
     steps:
+      # The caller picks the agent job's runner, and on its own machine
+      # could mint identity tokens with this file's `job_workflow_ref` for
+      # any audience: refuse an owner not ours here, on a hosted runner,
+      # before that job is scheduled.
+      - uses: cgwalters-forge/actions/admit@main
       # Trusted pinned code only; no target checkout and no write token.
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         id: target
@@ -167,11 +200,17 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           # The deployment's defaults: the one place they are written.
-          AGENT: ${{ inputs.agent || vars.AGENT || 'claude' }}
-          AGENT_MODEL: ${{ inputs.model || vars.AGENT_MODEL }}
+          AGENT: ${{ inputs.agent || vars.AGENT || 'opencode' }}
+          AGENT_MODEL: ${{ inputs.model || vars.AGENT_MODEL || 'praxis/gpt-6.1-sol' }}
           AGENT_RUNNER: ${{ inputs.runner || vars.AGENT_RUNNER || '"ubuntu-26.04"' }}
+          # The broker's URL and audience default together, in the script.
           INFERENCE_URL: ${{ inputs.inference-url || vars.INFERENCE_URL }}
           INFERENCE_AUDIENCE: ${{ inputs.inference-audience || vars.INFERENCE_AUDIENCE }}
+          BROKER_URL: http://100.114.231.4:18080
+          BROKER_AUDIENCE: praxis-credential-broker
+          INFERENCE_REGISTER: ${{ inputs.inference-register }}
+          AGENT_CONFIG_REPO: ${{ inputs.agent-config-repo || vars.AGENT_CONFIG_REPO || 'cgwalters-forge/agenthome' }}
+          AGENT_CONFIG_PATH: ${{ inputs.agent-config-path || vars.AGENT_CONFIG_PATH || 'opencode' }}
           APPLY_ENVIRONMENT: ${{ inputs.apply-environment || vars.APPLY_ENVIRONMENT }}
         with:
           script: |
@@ -179,12 +218,24 @@ jobs:
                 context.ref !== `refs/heads/${context.payload.repository.default_branch}`) {
               throw new Error('Dispatch must run on the default branch');
             }
+            // agentic-job (its #739) admits a private target only when it is
+            // the calling repository and the caller's bounds set `private =
+            // true`. Not here: the runner is a dispatcher's input, and a
+            // runner that publishes its own logs (devspace's do) or the
+            // shared inference proxy would carry the source out. A public
+            // caller can never be admitted privately, so refusing a private
+            // caller keeps the opt-in off whatever the bounds say. Asked of
+            // the API, as not every event's payload names the repository.
+            const { data: caller } = await github.rest.repos.get(context.repo);
+            if (caller.private !== false || caller.visibility !== 'public') {
+              throw new Error('cgwalters-agentic-job runs only from a public repository');
+            }
             const profile = process.env.PROFILE;
             if (!['implement', 'triage', 'research', 'review', 'fix'].includes(profile)) {
               throw new Error('Unknown dispatch profile');
             }
             const agent = process.env.AGENT;
-            if (!['fake', 'claude'].includes(agent)) throw new Error('AGENT must be fake or claude');
+            if (!['fake', 'opencode', 'claude', 'vibe'].includes(agent)) throw new Error('AGENT must be fake, opencode, claude or vibe');
             const runner = process.env.AGENT_RUNNER;
             try { JSON.parse(runner); } catch { throw new Error('The runner label must be JSON, such as "ubuntu-26.04"'); }
             const repo = process.env.TARGET_REPO;
@@ -194,22 +245,25 @@ jobs:
                 !/^[1-9][0-9]*$/.test(item) || !Number.isSafeInteger(Number(item))) {
               throw new Error('Expected OWNER/NAME and a positive safe issue number');
             }
-            // The scripted agent has no model and reaches no proxy: policy
-            // is given nothing it would not use. claude is given the proxy's
-            // root, to which agentic-job adds the route of its API
-            // (/anthropic) itself. Nothing here defaults to a proxy, so a
-            // real agent stops here, naming every setting it lacks.
-            const real = agent !== 'fake';
-            const missing = real ? [
-              ['apply-environment', 'APPLY_ENVIRONMENT'],
-              ['inference-url', 'INFERENCE_URL'],
-              ['inference-audience', 'INFERENCE_AUDIENCE'],
-            ].filter(([, name]) => !process.env[name]?.trim()) : [];
-            if (missing.length) {
-              throw new Error(`${agent} needs ${missing.map(([input, name]) => `the ${input} input (or the variable ${name})`).join(', ')}`);
+            if (agent !== 'fake' && !process.env.APPLY_ENVIRONMENT?.trim()) {
+              throw new Error('Missing the apply-environment input (or the variable APPLY_ENVIRONMENT)');
             }
-            // The budget and the timeout bound a run's cost and time, and a
-            // mistyped request count is capped here.
+            // The scripted agent has no model and reaches no proxy, and only
+            // opencode has a configuration to fetch: policy is given nothing
+            // it would not use. Every real agent, vibe too, is given the
+            // proxy's root: agentic-job adds the route of the agent's API
+            // (/anthropic, /v1, /mistral/v1) itself. Vibe can now take its
+            // models from a configuration repository's config.toml, but our
+            // default one is opencode's directory, which has none.
+            const real = agent !== 'fake';
+            // The default model is opencode's, a provider/model name; the
+            // proxy's Mistral route knows only bare names.
+            if (agent === 'vibe' && process.env.AGENT_MODEL.includes('/')) {
+              throw new Error(`vibe takes a bare Mistral model name such as devstral-small-latest, not '${process.env.AGENT_MODEL}'`);
+            }
+            // The budget and the timeout bound a run's cost and time; the
+            // request count is vibe's only cost bound, as the proxy has no
+            // price for its models, so a mistyped count is capped here.
             const maxRequests = process.env.MAX_REQUESTS;
             if (!/^[1-9][0-9]*$/.test(maxRequests) || Number(maxRequests) > 1000) {
               throw new Error('max-requests must be an integer from 1 to 1000');
@@ -249,8 +303,24 @@ jobs:
             core.setOutput('max-requests', real ? maxRequests : '0');
             core.setOutput('runner', runner);
             core.setOutput('model', real ? process.env.AGENT_MODEL : '');
-            core.setOutput('inference-url', real ? process.env.INFERENCE_URL : '');
-            core.setOutput('inference-audience', real ? process.env.INFERENCE_AUDIENCE : '');
+            // An audience is for the broker's identity token alone:
+            // agentic-job refuses one with any other registration. Our
+            // broker's audience is the default only with our broker's URL:
+            // registration posts the token to the URL, which could replay
+            // it to our broker until it expires.
+            const url = process.env.INFERENCE_URL || process.env.BROKER_URL;
+            const oidc = real && process.env.INFERENCE_REGISTER === 'github-oidc';
+            let audience = process.env.INFERENCE_AUDIENCE;
+            if (oidc && !audience) {
+              if (url !== process.env.BROKER_URL) {
+                throw new Error('An inference-url other than the default needs its own inference-audience (or the variable INFERENCE_AUDIENCE)');
+              }
+              audience = process.env.BROKER_AUDIENCE;
+            }
+            core.setOutput('inference-url', real ? url : '');
+            core.setOutput('inference-audience', oidc ? audience : '');
+            core.setOutput('agent-config-repo', agent === 'opencode' ? process.env.AGENT_CONFIG_REPO : '');
+            core.setOutput('agent-config-path', agent === 'opencode' ? process.env.AGENT_CONFIG_PATH : '');
             const [owner, name] = repo.split('/');
             const { data } = await github.rest.issues.get({ owner, repo: name, issue_number: Number(item) });
             const onPull = ['review', 'fix'].includes(profile);
@@ -259,9 +329,9 @@ jobs:
             }
             // As agentic-job's dispatch: the implement procedure is a skill
             // the run installs, so the task only names it. agentic-job
-            // refuses skills for fake, and only implement has a procedure,
-            // so the input is ignored for anything else.
-            const skills = process.env.SKILLS === 'true' && profile === 'implement' && agent === 'claude';
+            // refuses skills for vibe and fake, and only implement has a
+            // procedure, so the input is ignored for anything else.
+            const skills = process.env.SKILLS === 'true' && profile === 'implement' && ['claude', 'opencode'].includes(agent);
             core.setOutput('skills', String(skills));
             const instructions = profile === 'review'
               ? 'Review the pinned head supplied by the runner. Return one add_comment with VERDICT: APPROVE, CHANGES or REJECT on its first line and REASON: on its second line (at most 200 characters), or noop. A verdict is not merge authority.'
@@ -280,7 +350,7 @@ jobs:
   # on no event here.
   policy:
     needs: target
-    uses: cgwalters-forge/agentic-job/.github/workflows/policy.yml@b6a30d3d38dfcd7403fbba647949d424dd598641 # v0.3.0
+    uses: cgwalters-forge/agentic-job/.github/workflows/policy.yml@258dc11ca7fe1798836976c0424274d1498e22cb # v0.6.2
     # The write scopes are for the notify job alone, which posts the one
     # status comment; the policy job itself downscopes to read. The apply
     # token lets notify post it on an item of another repository, which the
@@ -306,10 +376,13 @@ jobs:
       allow: ${{ inputs.kind == 'fix' && inputs.fix-allow || inputs.allow }}
       agent: ${{ needs.target.outputs.agent }}
       model: ${{ needs.target.outputs.model }}
+      agent-config-repo: ${{ needs.target.outputs.agent-config-repo }}
+      agent-config-path: ${{ needs.target.outputs.agent-config-path }}
       agent-skills: ${{ needs.target.outputs.skills == 'true' }}
       config: ${{ inputs.config || vars.AGENT_CONFIG || '.github/agentic-job/hosted.toml' }}
       fake-profile: ${{ needs.target.outputs.agent == 'fake' && ((inputs.kind == 'triage' || inputs.kind == 'research') && 'comment' || (inputs.kind == 'fix' && 'implement' || inputs.kind)) || '' }}
-      # Counted by the proxy for every real agent. Checked in the target job.
+      # Counted by the proxy for every real agent; vibe requires it, having
+      # no price for a model to hold a budget against. Checked in the target job.
       max-requests: ${{ needs.target.outputs.max-requests }}
       # agentic-job's listening bridge (its #588): `sandbox setup` serves it
       # on the runner's tailnet name with `tailscale serve` and lets in only
@@ -322,8 +395,15 @@ jobs:
       push-item: ${{ inputs.kind == 'fix' && inputs.item || '' }}
       inference-url: ${{ needs.target.outputs.inference-url }}
       inference-audience: ${{ needs.target.outputs.inference-audience }}
+      inference-register: ${{ inputs.inference-register }}
+      inference-provider: ${{ inputs.inference-provider }}
       output-repo: ${{ inputs.repo }}
       comment-target: ${{ inputs.item }}
+      # Policy records this as run's watched item when the caller's config
+      # opts into steering. comment-target alone does not select a watcher.
+      # For implement, apply also links a new PR to this issue (Closes, or
+      # Refs for partial work); other profiles do not open a new PR.
+      issue: ${{ inputs.item }}
       apply-environment: ${{ inputs.apply-environment || vars.APPLY_ENVIRONMENT }}
       budget: ${{ inputs.budget }}
       # Keep the finished work of a run that stops on its budget, except for
@@ -354,15 +434,39 @@ jobs:
     outputs:
       exit: ${{ steps.run.outputs.exit }}
       safe-outputs-artifact-id: ${{ steps.run.outputs.safe-outputs-artifact-id }}
+      safe-outputs-artifact-digest: ${{ steps.run.outputs.safe-outputs-artifact-digest }}
     steps:
+      # The bootc-dev RHEL 10 runners lack what the steps below assume: git,
+      # without which checkout falls back to the REST API and prepare sees
+      # no commit; node, for the .mjs steps and the tailscale action; gh,
+      # from EPEL, for run's public-repository check. And sudo's
+      # secure_path omits /usr/local/bin, where prepare installs
+      # agentic-job; the link dangles until it does. Elsewhere, Ubuntu
+      # included, nothing runs. Shrinks once agentic-job calls itself by
+      # absolute path under sudo and stops needing gh.
+      - name: Install RHEL prerequisites
+        env:
+          OS_RELEASE: /etc/os-release
+        run: |
+          if ! test -r "$OS_RELEASE"; then exit 0; fi
+          # shellcheck source=/dev/null
+          release=$(. "$OS_RELEASE" && echo "${ID:-} ${VERSION_ID:-}")
+          case "$release" in
+            "rhel 10" | "rhel 10."*) ;;
+            *) exit 0 ;;
+          esac
+          sudo dnf install -y git nodejs
+          sudo dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm
+          sudo dnf install -y gh
+          sudo ln -sfn /usr/local/bin/agentic-job /usr/bin/agentic-job
       # The calling repository at the policy job's commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.policy.outputs.ref }}
           persist-credentials: false
       # The actions come from the policy call's own source, which must be
-      # the repository this file calls, at the commit it pins; it is
-      # checked out below as policy reported it.
+      # the repository this file calls; its commit is the one policy's `uses:`
+      # pins, and is checked out below as policy reported it.
       - name: The policy call's source repository
         env:
           SOURCE_REPOSITORY: ${{ needs.policy.outputs.source-repository }}
@@ -382,44 +486,35 @@ jobs:
         with:
           binary-artifact-id: ${{ needs.policy.outputs.binary-artifact-id }}
           policy-artifact-id: ${{ needs.policy.outputs.policy-artifact-id }}
-      # Our one privileged step, before anything of the agent's is on the
-      # machine: this repository's tailscale action, from the commit this
-      # file runs at (job.workflow_*, as agentic-job's policy.yml takes its
-      # own source), so the join is always the one reviewed with this file
-      # and nothing pins a commit of ours. The jmarrero-forge entry of its
-      # tailnets.json leaves the client id and tags to these variables of
-      # the calling repository, values only the tailnet's admin has; it
+      # Our one privileged step, this repository's own action at main, before anything of the agent's is on the
+      # machine. The action picks the client id and tags by organization,
       # joins with --accept-dns=false and makes tailscaled's socket root's
       # only. For a real agent, and for a session, which the operator
       # reaches on the tailnet: the scripted agent alone needs no proxy. A
       # session's hostname is the target job's, which its endpoint names.
-      - name: This workflow's own repository and commit
-        if: ${{ needs.target.outputs.agent != 'fake' || needs.target.outputs.session == 'true' }}
-        env:
-          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
-          WORKFLOW_SHA: ${{ job.workflow_sha }}
-          EXPECTED_REPOSITORY: jmarrero-forge/actions
-        run: |
-          echo "$WORKFLOW_REPOSITORY at $WORKFLOW_SHA"
-          [[ "$WORKFLOW_REPOSITORY" == "$EXPECTED_REPOSITORY" && "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] ||
-            { echo "::error::this workflow is not running from $EXPECTED_REPOSITORY at a full commit"; exit 1; }
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: ${{ needs.target.outputs.agent != 'fake' || needs.target.outputs.session == 'true' }}
-        with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
-          path: .jmarrero-actions
-          sparse-checkout: tailscale
-          persist-credentials: false
       - name: Join the tailnet
         if: ${{ needs.target.outputs.agent != 'fake' || needs.target.outputs.session == 'true' }}
-        uses: ./.jmarrero-actions/tailscale
+        uses: cgwalters-forge/actions/tailscale@main
         with:
-          oauth-client-id: ${{ vars.TAILSCALE_OAUTH_CLIENT_ID }}
-          tags: ${{ vars.TAILSCALE_TAGS }}
           hostname: ${{ needs.target.outputs.session-host || format('agentic-job-{0}-{1}', github.run_id, github.run_attempt) }}
-      # The last step with root.
-      - uses: ./.agentic-job-source/secure-host
+          # The calling repository's tailnet login, for an organization
+          # tailnets.json doesn't list; set, it replaces a listed one's too.
+          # Not tailscale/github-action's usual TAILSCALE_* names, which an
+          # organization may already set for an OAuth client of another use.
+          oauth-client-id: ${{ vars.AGENTIC_JOB_TAILSCALE_OAUTH_CLIENT_ID }}
+          tags: ${{ vars.AGENTIC_JOB_TAILSCALE_TAGS }}
+          # A session serves its bridge over HTTPS, and tailscaled makes and keeps
+          # that certificate only with a state directory.
+          statedir: ${{ needs.target.outputs.session == 'true' && '/var/lib/tailscale-session' || '' }}
+      # Fail on a missing proxy route before setup, not in its sandbox probes.
+      # This TCP check sends no credentials and skips fake/no-proxy runs.
+      - name: Check inference proxy reachability
+        run: agentic-job secure-host inference .agentic-job/config.toml
+      # The last step with root. Since v0.6.2 the public secure-host action
+      # forwards to this repository's image action and refuses `binary`;
+      # internal keeps `sandbox setup` and the second user that run expects,
+      # as agentic-job's own review workflow does.
+      - uses: ./.agentic-job-source/secure-host/internal
         with:
           binary: /usr/local/bin/agentic-job
           config: .agentic-job/config.toml
@@ -430,6 +525,7 @@ jobs:
         uses: ./.agentic-job-source/run
         with:
           github-token: ${{ github.token }}
+          inference-api-key: ${{ secrets.INFERENCE_API_KEY }}
 
   # A session's endpoint on the dispatch issue, as a line of the run's one
   # status comment, while the agent job runs. As policy's notify job does,
@@ -478,22 +574,35 @@ jobs:
     needs: [policy, agent]
     # Also for a run that failed and still handed something back.
     if: ${{ !cancelled() && needs.policy.result == 'success' && needs.agent.outputs.safe-outputs-artifact-id != '' }}
+    # Since v0.5.0 check.yml has a detect job that asks for `id-token: write`
+    # (agentic-job's docs/workflow.md, "Optional threat detection"); GitHub
+    # refuses the whole call without it, even with detection off. Only
+    # detect is granted it, and uses it to register at the inference proxy
+    # only when the calling repository sets AGENTIC_JOB_DETECT_MODEL. Leave
+    # that unset: detect runs on a hosted runner without our tailnet join,
+    # so it cannot reach the proxy and would block every apply.
+    # Since v0.6.2 check verifies the proposals upload's digest, which it
+    # reads with `actions: read`.
     permissions:
       contents: read
+      actions: read
+      id-token: write
     # No secret crosses this boundary.
-    uses: cgwalters-forge/agentic-job/.github/workflows/check.yml@b6a30d3d38dfcd7403fbba647949d424dd598641 # v0.3.0
+    uses: cgwalters-forge/agentic-job/.github/workflows/check.yml@258dc11ca7fe1798836976c0424274d1498e22cb # v0.6.2
     with:
       policy: ${{ toJSON(needs.policy.outputs) }}
       safe-outputs-artifact-id: ${{ needs.agent.outputs.safe-outputs-artifact-id }}
+      safe-outputs-artifact-digest: ${{ needs.agent.outputs.safe-outputs-artifact-digest }}
 
   apply:
     needs: [policy, agent, check, session]
     if: ${{ always() && needs.policy.result == 'success' }}
-    uses: cgwalters-forge/agentic-job/.github/workflows/apply.yml@b6a30d3d38dfcd7403fbba647949d424dd598641 # v0.3.0
+    uses: cgwalters-forge/agentic-job/.github/workflows/apply.yml@258dc11ca7fe1798836976c0424274d1498e22cb # v0.6.2
     # The caller's token for applying, under the generic name both workflows
     # declare: only the apply job reads it, in the environment
     # `apply-environment` names. Named, never inherited. No secret reaches
-    # target, the policy job, the agent job or check.
+    # target, the policy job or check; the agent job's run step gets only
+    # INFERENCE_API_KEY, empty unless the caller passes one.
     secrets:
       SAFE_OUTPUTS_PAT: ${{ secrets.SAFE_OUTPUTS_PAT }}
     # For the scripted agent's comment and a refusal's, which use the job

@@ -6,20 +6,50 @@
 # Out of the source tree, which may be a caller's checkout.
 export CARGO_TARGET_DIR := env("CARGO_TARGET_DIR", cache_directory() / "forge-lint")
 container := env("CONTAINER", "docker")
+# The linters' images, NAME:TAG@sha256:DIGEST from Containerfile.pin, where
+# Dependabot's docker updater moves tag and digest together. The digest is
+# what is pulled: a tag can be re-pointed by whoever can push to it, which
+# would choose what every caller's check runs (tests/pins.rs holds the form).
+pins := read(justfile_directory() / "Containerfile.pin")
+actionlint_image := replace_regex(pins, '(?s)^.*FROM (\S+/actionlint:\S+@sha256:[0-9a-f]{64})(?:\n.*)?$', '$1')
+zizmor_image := replace_regex(pins, '(?s)^.*FROM (\S+/zizmor:\S+@sha256:[0-9a-f]{64})(?:\n.*)?$', '$1')
 
 check: actionlint zizmor runner-labels
 
 actionlint:
-    {{ container }} run --rm -v "$(pwd):/repo:ro" -w /repo docker.io/rhysd/actionlint:1.7.12 -color
+    {{ container }} run --rm -v "$(pwd):/repo:ro" -w /repo {{ actionlint_image }} -color
 
-# Offline: the online audits need a token, and this needs none.
+# With GH_TOKEN (the action passes the job's token; contents: read is
+# enough), zizmor runs its online audits too: GitHub resolves
+# owner/repo@SHA to a commit that only exists in a fork, so a hash pin can
+# be swapped for an attacker's fork commit under the same `# vX` comment,
+# which impostor-commit and ref-version-mismatch catch. Without a token
+# (a local run) it falls back to the offline audits, and says so.
+# Collect all inputs: the default skips what .gitignore matches, tracked
+# files included, which would let a pull request hide a workflow it adds.
 zizmor:
-    {{ container }} run --rm -v "$(pwd):/repo:ro" -w /repo ghcr.io/zizmorcore/zizmor:1.30.1 --offline .
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n "${GH_TOKEN:-}" ]; then
+      offline=()
+    else
+      echo "zizmor: GH_TOKEN is not set, so the online audits (impostor-commit, ref-version-mismatch, ...) are skipped" >&2
+      offline=(--offline)
+    fi
+    {{ container }} run --rm -e GH_TOKEN -v "$(pwd):/repo:ro" -w /repo {{ zizmor_image }} "${offline[@]}" --collect=all .
 
 # cargo runs from here, so a checked repository's rust-toolchain.toml and
 # .cargo/config.toml don't pick the toolchain or flags of this build.
 runner-labels:
-    cd "{{ justfile_directory() }}" && cargo run --quiet --locked -- "$OLDPWD/.github/workflows"
+    cd "{{ justfile_directory() }}" && cargo run --quiet --locked --bin runner-labels -- "$OLDPWD/.github/workflows"
 
 test:
-    cd "{{ justfile_directory() }}" && cargo test --locked
+    cd "{{ justfile_directory() }}" && JUST="{{ just_executable() }}" cargo test --locked
+
+# The check an organization ruleset requires of pull requests
+# (workflows-check.md), run from the root of the target repository's clone
+# with BASE and HEAD set to full commit IDs. Its files are read as Git
+# blobs; nothing of the clone is run, and cargo runs from here so that
+# nothing of it configures the build either.
+workflows-check:
+    cd "{{ justfile_directory() }}" && cargo run --quiet --locked --bin workflows-check -- "$OLDPWD" "$BASE" "$HEAD"

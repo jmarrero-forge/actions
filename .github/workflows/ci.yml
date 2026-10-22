@@ -38,6 +38,12 @@ jobs:
       - name: event-review wrapper tests
         if: ${{ !cancelled() }}
         run: just test-review
+      - name: admit unit tests
+        if: ${{ !cancelled() }}
+        run: just test-admit
+      - name: secure-host unit tests
+        if: ${{ !cancelled() }}
+        run: just test-secure-host
       # sandbox-share on this runner: content, a file and a directory are
       # shared root-owned and read-only, and a symlink is refused.
       - name: Make files to share
@@ -68,7 +74,9 @@ jobs:
         run: node sandbox-share/check.mjs
       - name: tailscale unit tests
         run: node --test tailscale/*.test.mjs
-      - name: jmarrero-agentic-job unit tests
+      - name: app-token unit tests
+        run: node --test app-token/*.test.mjs
+      - name: cgwalters-agentic-job unit tests
         run: node --test .github/workflows/*.test.mjs
       # tailscale without a tailnet: with no id-token permission the login
       # fails after tailscaled started (and after the job user reached its

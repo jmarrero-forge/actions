@@ -1,0 +1,12 @@
+# This repository's workflow files, exempt from workflows-check's job
+# shape check (lint/workflows-check.md): none runs an agent outside the
+# reusable workflow, and each is reviewed here.
+[exempt]
+"ci.yml" = "This repository's CI: tests this revision's actions by local path, with a read-only token."
+"cgwalters-agentic-job.yml" = "Reusable wrapper of agentic-job's reusable workflows, which run the agent in their own sandbox."
+"cgwalters-review.yml" = "Reusable wrapper of agentic-job's review workflows, which run the agent in their own sandbox."
+"lock-new-items.yml" = "Reusable workflow whose one step locks the opened item by API, reading and running nothing of it."
+"lock.yml" = "This repository's caller of lock-new-items.yml, run from the base branch."
+"review.yml" = "This repository's caller of cgwalters-review.yml, run from the base branch."
+"secure-host.yml" = "This repository's CI for the secure-host action: runs it by local path (./secure-host) on hosted runners, with a read-only token."
+"workflows-check.yml" = "The required check itself: reads a pull request's files as Git blobs, with a read-only token."

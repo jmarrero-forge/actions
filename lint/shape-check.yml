@@ -1,0 +1,6 @@
+# The job shape check workflows-check runs (workflows-check.md):
+# agentic-job's `workflows check`, as its release binary, refused unless its
+# SHA-256 is this one. Changing either is how the check moves to a new
+# agentic-job.
+url: https://github.com/cgwalters-forge/agentic-job/releases/download/v0.4.0/agentic-job-x86_64-unknown-linux-musl
+sha256: d00ccadf5714eb290713b83bd3f4769b0e7257dbe40140f483ab3be103ec805a

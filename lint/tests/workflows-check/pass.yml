@@ -1,0 +1,12 @@
+name: ci
+on:
+  pull_request:
+  merge_group:
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    permissions: {}
+    steps:
+      - run: make
+      - uses: ./local-action # zizmor: ignore[self-repository]

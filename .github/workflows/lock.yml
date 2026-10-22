@@ -1,0 +1,12 @@
+name: lock
+on:
+  issues:
+    types: [opened]
+permissions: {}
+jobs:
+  lock:
+    # Local, so it runs as on the base branch, never as a pull request
+    # edits it; other repositories call it at main (README.md).
+    uses: ./.github/workflows/lock-new-items.yml
+    permissions:
+      issues: write

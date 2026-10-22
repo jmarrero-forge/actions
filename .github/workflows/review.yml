@@ -9,18 +9,18 @@ on:
 permissions: {}
 jobs:
   review:
-    # Off until the repository variable AGENT_REVIEW names the reviewing
-    # agent: the wrapper has no fallback agent or broker, and would fail
-    # every pull request's review in policy until a broker admits it.
     if: >-
-      vars.AGENT_REVIEW != '' && (github.event_name == 'pull_request_target' ||
-      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review')))
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review'))
     # Base-owned policy; the head is fetched only as data inside the sandbox.
-    # The wrapper of this repository, at the base's commit, composes
-    # agentic-job at a commit it pins with jmarrero-forge's tailnet join:
-    # agentic-job's own review.yml joins cgwalters' tailnet, which has no
-    # entry for this organization.
-    uses: ./.github/workflows/jmarrero-review.yml
+    # A local reference resolves at the commit this file was read from: for
+    # pull_request_target the base branch, for issue_comment the default
+    # branch, never the pull request's head. So a pull request's edits to the
+    # wrapper never review that pull request, and merged edits review the next
+    # one, with no pin to move. The agentic-job tag it calls is checked
+    # against the agent job's in review.test.mjs, as is passing no secret.
+    uses: ./.github/workflows/cgwalters-review.yml
+    # Exactly the union of the wrapper's job grants (review.test.mjs).
     permissions:
       contents: read
       issues: read

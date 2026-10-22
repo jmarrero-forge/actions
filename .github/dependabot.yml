@@ -1,23 +1,39 @@
-# Third-party actions, agentic-job included, are pinned by commit with
-# their release tag in a comment, which is what lets this move them. Our
-# own tailscale action is not pinned: the wrappers take it from the commit
-# they run at.
+# Third-party actions are pinned by commit; this keeps those pins moving.
+# agentic-job is pinned by its release's commit with the tag as a comment,
+# which this moves too; our other own actions (cgwalters-forge/actions)
+# follow main and need no updates.
 version: 2
 updates:
   - package-ecosystem: github-actions
     # The workflows, and the composite actions' own pins.
-    directories: [/, /tailscale, /lint]
+    directories: [/, /tailscale, /lint, /app-token]
     schedule:
       interval: daily
     # policy, check and apply must name the same commit (the run refuses
-    # calls at differing commits), so a new release is one pull request for
-    # all three, and for the review wrapper's calls, kept at the same one.
+    # calls at differing commits), so a new tag is one pull request for all
+    # three, in both cgwalters-agentic-job.yml and cgwalters-review.yml.
     groups:
       agentic-job:
         patterns: ["cgwalters-forge/agentic-job*"]
     # A release that turns out to be compromised is usually pulled within
     # days; checking daily but taking only week-old versions avoids pinning
-    # one in the meantime. agentic-job is someone else's here, so it waits
-    # like the rest.
+    # one in the meantime. agentic-job is our own and was followed at main
+    # until its first release, so it is not held back.
+    cooldown:
+      default-days: 7
+      exclude: ["cgwalters-forge/agentic-job*"]
+  # secure-host/Containerfile.pin, the image the action runs: Dependabot
+  # moves its tag and digest together. The image is agentic-job's release,
+  # our own, so it is not held back either.
+  - package-ecosystem: docker
+    directory: /secure-host
+    schedule:
+      interval: daily
+  # lint/Containerfile.pin, the actionlint and zizmor images the shared
+  # check runs: third-party, so held back like the third-party actions.
+  - package-ecosystem: docker
+    directory: /lint
+    schedule:
+      interval: daily
     cooldown:
       default-days: 7

@@ -1,0 +1,5 @@
+{
+  "repository": "cgwalters-forge/agentic-job",
+  "workflow": ".github/workflows/release.yml",
+  "ref": "refs/heads/main"
+}

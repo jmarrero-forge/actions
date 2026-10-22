@@ -3,11 +3,9 @@
 self-hosted-runner:
   labels:
     - ubuntu-26.04
+# actionlint 1.7.12 predates the job context's workflow_repository and
+# workflow_sha, which the required workflow checks itself out by.
 paths:
-  # The wrappers check out this repository's tailscale action at the commit
-  # they run at; GitHub exposes the executing reusable workflow's source in
-  # these job fields, which actionlint 1.7.12 does not know (as in
-  # agentic-job's own actionlint.yaml).
-  '.github/workflows/jmarrero-{agentic-job,review}.yml':
+  .github/workflows/workflows-check.yml:
     ignore:
-      - '^property "workflow_(repository|sha)" is not defined in object type \{check_run_id: number; container: .*; status: string\}$'
+      - 'property "workflow_(repository|sha)" is not defined in object type'

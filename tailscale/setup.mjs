@@ -3,20 +3,18 @@ import { pathToFileURL } from 'node:url';
 
 export function settings(owner, overrides = {}) {
   const tailnets = JSON.parse(readFileSync(new URL('./tailnets.json', import.meta.url)));
-  if (!Object.hasOwn(tailnets, owner)) {
-    throw new Error(`No tailnet settings for GitHub organization ${owner}; add an entry to tailscale/tailnets.json.`);
+  // An organization without an entry, another deployment's, names its own
+  // login: a client ID and tags, both, which our wrappers take from the
+  // calling repository's variables. That admits no one new: Tailscale's
+  // federated identity decides which repositories may log in as a client
+  // ID, and an entry's settings could already be overridden all the same.
+  const known = Object.hasOwn(tailnets, owner);
+  if (!known && !(overrides['oauth-client-id'] && overrides.tags)) {
+    throw new Error(`No tailnet settings for GitHub organization ${owner}; add an entry to tailscale/tailnets.json, or give both oauth-client-id and tags.`);
   }
-  const result = { ...tailnets[owner] };
+  const result = known ? { ...tailnets[owner] } : { 'oauth-client-id': '', tags: '', proxy: '' };
   for (const key of ['oauth-client-id', 'tags', 'proxy']) {
     if (overrides[key]) result[key] = overrides[key];
-  }
-  // An entry may leave these empty for the caller to pass as inputs, from
-  // values only the tailnet's admin has; joining without them would fail
-  // later with a less helpful error from Tailscale.
-  for (const key of ['oauth-client-id', 'tags']) {
-    if (!result[key]) {
-      throw new Error(`No ${key} for GitHub organization ${owner}: set it in tailscale/tailnets.json or pass the ${key} input.`);
-    }
   }
   result.audience = overrides.audience || `api.tailscale.com/${result['oauth-client-id']}`;
   for (const value of Object.values(result)) {

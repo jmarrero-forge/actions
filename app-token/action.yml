@@ -1,0 +1,123 @@
+name: App token
+description: >-
+  Mint one role's GitHub App installation token, scoped to the given owner,
+  repositories and permissions, with actions/create-github-app-token, and
+  mask it.
+# The permission inputs are the ones the roles of tracker#766 use; add one
+# here, and to remint.mjs's PERMISSIONS, when a role needs another. At least
+# one is required: with none, upstream grants all of the app's permissions,
+# so a step that only comments could also push with an app that may.
+inputs:
+  app-id:
+    description: The role's GitHub App ID (a variable, not a secret).
+    required: true
+  private-key:
+    description: The role's GitHub App private key (a secret).
+    required: true
+  owner:
+    description: Owner of the installation and of the repositories.
+    required: true
+  repositories:
+    description: >-
+      Comma or newline separated names, without the owner, of the only
+      repositories the token reaches. Required, so that no token reaches
+      every repository the installation does by default.
+    required: true
+  permission-actions:
+    description: read or write; empty for none.
+    required: false
+    default: ""
+  permission-checks:
+    description: read or write; empty for none.
+    required: false
+    default: ""
+  permission-contents:
+    description: read or write; empty for none.
+    required: false
+    default: ""
+  permission-issues:
+    description: read or write; empty for none.
+    required: false
+    default: ""
+  permission-pull-requests:
+    description: read or write; empty for none.
+    required: false
+    default: ""
+  permission-statuses:
+    description: read or write; empty for none.
+    required: false
+    default: ""
+  permission-workflows:
+    description: write; empty for none.
+    required: false
+    default: ""
+outputs:
+  token:
+    description: The installation token, which lasts an hour and is revoked at the end of the job.
+    value: ${{ steps.mint.outputs.token }}
+  remint:
+    description: Path of remint.mjs, for steps that may outlast the token (README).
+    value: ${{ steps.remint.outputs.path }}
+runs:
+  using: composite
+  steps:
+    # The runner doesn't enforce `required` for a composite action's inputs.
+    - name: Check the scope
+      shell: bash
+      env:
+        REPOSITORIES: ${{ inputs.repositories }}
+        LC_ALL: C
+        PERMISSIONS: >-
+          ${{ inputs.permission-actions }}
+          ${{ inputs.permission-checks }}
+          ${{ inputs.permission-contents }}
+          ${{ inputs.permission-issues }}
+          ${{ inputs.permission-pull-requests }}
+          ${{ inputs.permission-statuses }}
+          ${{ inputs.permission-workflows }}
+      # Upstream trims each name with JavaScript's trim, whose whitespace is
+      # wider than bash's (no-break space, U+FEFF, U+2028 and so on), and
+      # with no name left it grants the whole installation on owner. So
+      # every word here must be a repository name, and at least one there.
+      run: |
+        set -f
+        names=0
+        for name in ${REPOSITORIES//[,[:space:]]/ }; do
+          if [[ ! $name =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::repositories has an entry that is not a repository name"; exit 1
+          fi
+          names=$((names + 1))
+        done
+        if test "$names" = 0; then
+          echo "::error::repositories is empty: name the repositories the token may reach"; exit 1
+        fi
+        if test -z "${PERMISSIONS// /}"; then
+          echo "::error::no permission-* input is set: name the permissions the token needs"; exit 1
+        fi
+    # app-id, not upstream's preferred client-id: roles are configured by
+    # app id (tracker#766), and remint.mjs signs its JWT with the same one.
+    - name: Mint the token
+      id: mint
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: ${{ inputs.owner }}
+        repositories: ${{ inputs.repositories }}
+        permission-actions: ${{ inputs.permission-actions }}
+        permission-checks: ${{ inputs.permission-checks }}
+        permission-contents: ${{ inputs.permission-contents }}
+        permission-issues: ${{ inputs.permission-issues }}
+        permission-pull-requests: ${{ inputs.permission-pull-requests }}
+        permission-statuses: ${{ inputs.permission-statuses }}
+        permission-workflows: ${{ inputs.permission-workflows }}
+    # Upstream masks the token too; this keeps it masked should that change.
+    - name: Mask the token
+      id: remint
+      shell: bash
+      env:
+        TOKEN: ${{ steps.mint.outputs.token }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        echo "::add-mask::$TOKEN"
+        echo "path=$ACTION_PATH/remint.mjs" >> "$GITHUB_OUTPUT"

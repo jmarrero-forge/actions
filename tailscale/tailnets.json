@@ -2,26 +2,16 @@
   "bootc-dev": {
     "oauth-client-id": "Tu4811111111CNTRL-k8kuWVAqwJ11CNTRL",
     "tags": "tag:bootc-dev-sandbox",
-    "proxy": "http://100.121.0.115:18080"
+    "proxy": "http://100.114.231.4:18080"
   },
   "cgwalters-forge-stage": {
     "oauth-client-id": "Tu4811111111CNTRL-kv9jWbPMEU11CNTRL",
     "tags": "tag:bootc-dev-sandbox",
-    "proxy": "http://100.121.0.115:18080"
+    "proxy": "http://100.114.231.4:18080"
   },
   "cgwalters-forge": {
     "oauth-client-id": "Tu4811111111CNTRL-kcuz9S28gr11CNTRL",
     "tags": "tag:bootc-dev-sandbox",
-    "proxy": "http://100.121.0.115:18080"
-  },
-  "jmarrero-forge": {
-    "oauth-client-id": "",
-    "tags": "",
-    "proxy": ""
-  },
-  "jmarrero": {
-    "oauth-client-id": "",
-    "tags": "",
-    "proxy": ""
+    "proxy": "http://100.114.231.4:18080"
   }
 }
