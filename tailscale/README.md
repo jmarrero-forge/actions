@@ -34,7 +34,9 @@ What a join needs is in [tailnets.json](tailnets.json), keyed by
 `github.repository_owner`; none of it is secret. Another deployment's
 organization, which has no entry, must give both `oauth-client-id` and
 `tags` as inputs, or it fails before joining; its `proxy` is empty unless
-given. The reusable workflows pass the calling repository's variables
+given. Our organizations' entries name the tag and leave the client ID
+empty, for the caller to give: a join without one fails before it
+starts. The reusable workflows pass the calling repository's variables
 `AGENTIC_JOB_TAILSCALE_OAUTH_CLIENT_ID` and `AGENTIC_JOB_TAILSCALE_TAGS`
 as those inputs, but run only for an owner that
 [admit/owners.json](../admit/owners.json) lists. The audience is `api.tailscale.com/` followed by the

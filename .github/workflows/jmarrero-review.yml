@@ -3,6 +3,10 @@
 # They name the release's commit, not its tag, for the reason
 # jmarrero-agentic-job.yml's header gives.
 # No dispatcher inputs: identity/configuration comes from repository variables.
+# It is cgwalters-forge/actions' cgwalters-review.yml with jmarrero-forge's
+# values. The reviewing agent is AGENT_REVIEW, a variable of its own, so
+# that turning on dispatched runs (AGENT) leaves reviews as they were, and
+# the broker's address is INFERENCE_URL alone: none is written here.
 name: jmarrero-review
 on:
   workflow_call:
@@ -20,7 +24,7 @@ jobs:
     timeout-minutes: 5
     permissions: {}
     steps:
-      - uses: cgwalters-forge/actions/admit@main
+      - uses: jmarrero-forge/actions/admit@main
 
   policy:
     needs: admit
@@ -54,13 +58,13 @@ jobs:
       notify: none
       allow: ${{ github.event_name == 'issue_comment' && 'workflow/review-command.toml' || 'workflow/review.toml' }}
       config: ${{ vars.AGENT_CONFIG || '.agentic-job-source/.github/agentic-job/hosted.toml' }}
-      agent: ${{ vars.AGENT || 'opencode' }}
-      model: ${{ vars.AGENT_MODEL || 'praxis/gpt-6.1-sol' }}
+      agent: ${{ vars.AGENT_REVIEW || 'claude' }}
+      model: ${{ vars.AGENT_MODEL }}
       # Repository names are configured by the owner, never dispatch inputs.
-      agent-config-repo: ${{ (vars.AGENT == '' || vars.AGENT == 'opencode' || vars.AGENT == 'vibe') && vars.AGENT_CONFIG_REPO || '' }}
-      agent-config-path: ${{ (vars.AGENT == '' || vars.AGENT == 'opencode' || vars.AGENT == 'vibe') && vars.AGENT_CONFIG_PATH || '' }}
-      inference-url: ${{ vars.INFERENCE_URL || 'http://100.114.231.4:18080' }}
-      inference-audience: ${{ vars.INFERENCE_AUDIENCE || 'praxis-credential-broker' }}
+      agent-config-repo: ${{ (vars.AGENT_REVIEW == 'opencode' || vars.AGENT_REVIEW == 'vibe') && vars.AGENT_CONFIG_REPO || '' }}
+      agent-config-path: ${{ (vars.AGENT_REVIEW == 'opencode' || vars.AGENT_REVIEW == 'vibe') && vars.AGENT_CONFIG_PATH || '' }}
+      inference-url: ${{ vars.INFERENCE_URL }}
+      inference-audience: ${{ vars.INFERENCE_AUDIENCE || 'jmarrero-praxis-broker' }}
       max-requests: '150'
       budget: '500'
       timeout: '75'
@@ -158,10 +162,11 @@ jobs:
       # action at main, as in jmarrero-agentic-job.yml: nothing moves a
       # commit pin here, so it would keep a retired client or hardening.
       - name: Join the tailnet
-        uses: cgwalters-forge/actions/tailscale@main
+        uses: jmarrero-forge/actions/tailscale@main
         with:
           hostname: agentic-job-${{ github.run_id }}-${{ github.run_attempt }}
-          # As in jmarrero-agentic-job.yml: unset, tailnets.json's entry.
+          # As in jmarrero-agentic-job.yml: our tailnets.json entries leave
+          # the client ID to this variable.
           oauth-client-id: ${{ vars.AGENTIC_JOB_TAILSCALE_OAUTH_CLIENT_ID }}
           tags: ${{ vars.AGENTIC_JOB_TAILSCALE_TAGS }}
       # Fail on a missing proxy route before setup, not in its sandbox probes.

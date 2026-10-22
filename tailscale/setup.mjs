@@ -16,6 +16,14 @@ export function settings(owner, overrides = {}) {
   for (const key of ['oauth-client-id', 'tags', 'proxy']) {
     if (overrides[key]) result[key] = overrides[key];
   }
+  // Our entries leave the client ID to the caller, which the wrappers take
+  // from the calling repository's variables; joining without one would
+  // fail later, in Tailscale's token exchange, less helpfully.
+  for (const key of ['oauth-client-id', 'tags']) {
+    if (!result[key]) {
+      throw new Error(`No ${key} for GitHub organization ${owner}: set it in tailscale/tailnets.json or pass the ${key} input (the wrappers pass the variable AGENTIC_JOB_TAILSCALE_${key.toUpperCase().replaceAll('-', '_')}).`);
+    }
+  }
   result.audience = overrides.audience || `api.tailscale.com/${result['oauth-client-id']}`;
   for (const value of Object.values(result)) {
     if (/[\r\n]/.test(value)) throw new Error('Tailnet settings must be single-line values');

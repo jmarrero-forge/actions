@@ -9,9 +9,12 @@ on:
 permissions: {}
 jobs:
   review:
+    # Off until the repository variable AGENT_REVIEW names the reviewing
+    # agent: the wrapper has no fallback broker, and jmarrero's broker
+    # admits no review from this repository, so every review would fail.
     if: >-
-      github.event_name == 'pull_request_target' ||
-      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review'))
+      vars.AGENT_REVIEW != '' && (github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review')))
     # Base-owned policy; the head is fetched only as data inside the sandbox.
     # A local reference resolves at the commit this file was read from: for
     # pull_request_target the base branch, for issue_comment the default

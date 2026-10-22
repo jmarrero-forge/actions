@@ -1,11 +1,12 @@
 # jmarrero-agentic-job: an agent run of cgwalters-forge/agentic-job with
 # everything that is this deployment's and not the generic project's: the
 # tailnet join, the inference proxy and its audience, the runner, the agent
-# and its model. Every repository of ours calls this one file at main. Any
-# public repository can call it too, so the inference broker and the
-# tailnet admit its `job_workflow_ref` only with an owner id of ours, and
-# the target job refuses any other owner (admit/owners.json). The README
-# has a caller to copy.
+# and its model. It is cgwalters-forge/actions' cgwalters-agentic-job.yml
+# with jmarrero-forge's values, kept to those so that resyncing stays
+# cheap. Our callers pin this file by commit, the one jmarrero's inference
+# broker admits. Any public repository can call it too, so the target job
+# refuses an owner not ours (admit/owners.json). The README has a caller
+# to copy.
 #
 # The policy, check and apply workflows and the prepare, secure-host and run
 # actions are cgwalters-forge/agentic-job's at a release (its
@@ -26,9 +27,10 @@
 #
 # What is the deployment's is decided in the target job and nowhere else:
 # an input, else the calling repository's variable of the name the input's
-# description gives, else the default written there. A new repository
-# therefore sets nothing; a variable is for trying a model without
-# changing this file.
+# description gives, else the default written there. The broker's
+# address is the exception: this public file writes none, so a real agent
+# needs the calling repository's variable INFERENCE_URL, and the tailnet
+# join its AGENTIC_JOB_TAILSCALE_OAUTH_CLIENT_ID (tailscale/README.md).
 #
 # What is the calling repository's stays the caller's: its trigger, run
 # name and concurrency, its bounds (`allow`, `fix-allow`) and runner
@@ -81,11 +83,11 @@ on:
         default: ""
       # Deployment settings, for a caller that must differ; see the header.
       agent:
-        description: "fake, opencode, claude or vibe; empty: the variable AGENT, else opencode"
+        description: "fake, opencode, claude or vibe; empty: the variable AGENT, else claude"
         type: string
         default: ""
       model:
-        description: "The model, as the proxy serves it (for vibe, a bare Mistral name such as devstral-small-latest); empty: the variable AGENT_MODEL, else our default"
+        description: "The model, as the proxy serves it (for vibe, a bare Mistral name such as devstral-small-latest); empty: the variable AGENT_MODEL, else the agent's own default"
         type: string
         default: ""
       budget:
@@ -109,19 +111,19 @@ on:
         type: string
         default: ""
       inference-url:
-        description: "The inference proxy; empty: the variable INFERENCE_URL, else ours"
+        description: "The inference proxy; empty: the variable INFERENCE_URL, which a real agent needs"
         type: string
         default: ""
       inference-audience:
-        description: "Audience of the run's identity token at the proxy; empty: the variable INFERENCE_AUDIENCE, else ours, but only with our inference-url: another URL without an audience fails"
+        description: "Audience of the run's identity token at the proxy; empty: the variable INFERENCE_AUDIENCE, else our broker's, but only with the variable INFERENCE_URL's address: another URL without an audience fails"
         type: string
         default: ""
       agent-config-repo:
-        description: "Where opencode's configuration is; empty: the variable AGENT_CONFIG_REPO, else ours"
+        description: "Where opencode's configuration is; empty: the variable AGENT_CONFIG_REPO, else upstream's cgwalters-forge/agenthome"
         type: string
         default: ""
       agent-config-path:
-        description: "Path of opencode's configuration there; empty: the variable AGENT_CONFIG_PATH, else ours"
+        description: "Path of opencode's configuration there; empty: the variable AGENT_CONFIG_PATH, else agenthome's"
         type: string
         default: ""
       # agentic-job's provider-key mode (its #740), passed through as is;
@@ -181,7 +183,7 @@ jobs:
       # could mint identity tokens with this file's `job_workflow_ref` for
       # any audience: refuse an owner not ours here, on a hosted runner,
       # before that job is scheduled.
-      - uses: cgwalters-forge/actions/admit@main
+      - uses: jmarrero-forge/actions/admit@main
       # Trusted pinned code only; no target checkout and no write token.
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         id: target
@@ -200,14 +202,17 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           # The deployment's defaults: the one place they are written.
-          AGENT: ${{ inputs.agent || vars.AGENT || 'opencode' }}
-          AGENT_MODEL: ${{ inputs.model || vars.AGENT_MODEL || 'praxis/gpt-6.1-sol' }}
+          AGENT: ${{ inputs.agent || vars.AGENT || 'claude' }}
+          AGENT_MODEL: ${{ inputs.model || vars.AGENT_MODEL }}
           AGENT_RUNNER: ${{ inputs.runner || vars.AGENT_RUNNER || '"ubuntu-26.04"' }}
           # The broker's URL and audience default together, in the script.
           INFERENCE_URL: ${{ inputs.inference-url || vars.INFERENCE_URL }}
           INFERENCE_AUDIENCE: ${{ inputs.inference-audience || vars.INFERENCE_AUDIENCE }}
-          BROKER_URL: http://100.114.231.4:18080
-          BROKER_AUDIENCE: praxis-credential-broker
+          # Our broker: its address is the calling repository's variable,
+          # never written here, and its audience is the one jmarrero's
+          # broker requires (jmarrero/atomic-setup, bot/praxis-broker).
+          BROKER_URL: ${{ vars.INFERENCE_URL }}
+          BROKER_AUDIENCE: jmarrero-praxis-broker
           INFERENCE_REGISTER: ${{ inputs.inference-register }}
           AGENT_CONFIG_REPO: ${{ inputs.agent-config-repo || vars.AGENT_CONFIG_REPO || 'cgwalters-forge/agenthome' }}
           AGENT_CONFIG_PATH: ${{ inputs.agent-config-path || vars.AGENT_CONFIG_PATH || 'opencode' }}
@@ -309,6 +314,9 @@ jobs:
             // registration posts the token to the URL, which could replay
             // it to our broker until it expires.
             const url = process.env.INFERENCE_URL || process.env.BROKER_URL;
+            if (real && !url) {
+              throw new Error('Missing the inference-url input (or the variable INFERENCE_URL)');
+            }
             const oidc = real && process.env.INFERENCE_REGISTER === 'github-oidc';
             let audience = process.env.INFERENCE_AUDIENCE;
             if (oidc && !audience) {
@@ -494,7 +502,7 @@ jobs:
       # session's hostname is the target job's, which its endpoint names.
       - name: Join the tailnet
         if: ${{ needs.target.outputs.agent != 'fake' || needs.target.outputs.session == 'true' }}
-        uses: cgwalters-forge/actions/tailscale@main
+        uses: jmarrero-forge/actions/tailscale@main
         with:
           hostname: ${{ needs.target.outputs.session-host || format('agentic-job-{0}-{1}', github.run_id, github.run_attempt) }}
           # The calling repository's tailnet login, for an organization

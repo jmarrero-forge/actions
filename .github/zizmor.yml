@@ -4,7 +4,7 @@ rules:
   unpinned-uses:
     config:
       policies:
-        "cgwalters-forge/*": ref-pin
+        "jmarrero-forge/*": ref-pin
         "*": hash-pin
   # Suggests `$/` for every local action, ci.yml's included; we keep `./`
   # (./.agentic-job-source is another repository's checkout anyway).

@@ -29,8 +29,8 @@ permissions: {}
 jobs:
   review:
     if: >-
-      github.event_name == 'pull_request_target' ||
-      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review'))
+      vars.AGENT_REVIEW != '' && (github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review')))
     uses: ./.github/workflows/jmarrero-review.yml
     permissions:
       contents: read
@@ -58,7 +58,7 @@ test('the wrapper calls agentic-job at the commit the agent job calls', () => {
 // joining with an old client, upstream pin and hardening.
 test('both wrappers use our own actions at main', () => {
   for (const file of ['./jmarrero-agentic-job.yml', './jmarrero-review.yml']) {
-    const refs = [...read(file).matchAll(/uses: cgwalters-forge\/actions\/(\S+)@(\S+)/g)];
+    const refs = [...read(file).matchAll(/uses: jmarrero-forge\/actions\/(\S+)@(\S+)/g)];
     assert.deepEqual(refs.map(match => [match[1], match[2]]), [['admit', 'main'], ['tailscale', 'main']], file);
   }
 });
