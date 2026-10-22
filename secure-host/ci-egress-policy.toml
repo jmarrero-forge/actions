@@ -1,0 +1,22 @@
+# The secure-host workflow's `egress-policy` fixture: it replaces the
+# image's policy, so these rules are the only writes the proxy allows
+# beyond the runner's own endpoints. The egress probe POSTs to the CI
+# probe's path and to example.com's root, which no rule here matches.
+
+# The image's `sandbox check` requires a git fetch from github.com
+# (`egress-git`), and a fetch is a POST to git-upload-pack: without this
+# rule from the image's own policy, the action's check fails. Pushing
+# (git-receive-pack) stays refused, which `egress-push` checks.
+[[write]]
+name = "git fetch (smart HTTP)"
+why = "Fetching and cloning POST to git-upload-pack; pushing (git-receive-pack) stays refused."
+hosts = ["github.com"]
+methods = ["POST"]
+paths = ["/**/git-upload-pack"]
+
+[[write]]
+name = "secure-host CI probe"
+why = "Proves a caller's rule allows its write and nothing else; example.com accepts no data."
+hosts = ["example.com"]
+methods = ["POST"]
+paths = ["/secure-host-ci"]

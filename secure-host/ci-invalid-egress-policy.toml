@@ -1,0 +1,4 @@
+# Readable TOML, but an invalid write rule: hosts, methods and paths are absent.
+[[write]]
+name = "invalid CI rule"
+why = "Proves image policy validation fails the action, even with check disabled."

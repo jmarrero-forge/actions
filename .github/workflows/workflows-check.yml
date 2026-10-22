@@ -1,0 +1,53 @@
+# The workflow an organization ruleset requires of every pull request
+# (lint/workflows-check.md). It runs from this repository at the ref the
+# ruleset pins, so a pull request in the target repository cannot change
+# it; the target's files are only ever read as Git blobs.
+name: workflows-check
+
+on:
+  # edited: a pull request moved to another base branch is checked again,
+  # against what that branch already has.
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  workflows-check:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      # An empty repository or ref would check out the target repository's
+      # default instead, whose pull request could then supply the checker.
+      - name: Require this workflow's own source
+        env:
+          REPOSITORY: ${{ job.workflow_repository }}
+          SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$REPOSITORY" == */* && "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "no source for this workflow: '$REPOSITORY' '$SHA'"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+          path: checker
+      # A sibling of the checker, not its parent, so cargo finds none of
+      # its configuration; full history for the merge base.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: target
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: just@1.58.0
+      - name: workflows-check
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: just --justfile checker/lint/Justfile --working-directory target workflows-check

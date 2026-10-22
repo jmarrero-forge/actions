@@ -1,0 +1,116 @@
+# Secures the machine a job runs on and takes root away from every later
+# step: README.md says what is claimed, what is not, and the shape of the
+# job around it. The work is done by the digest-pinned secure-host image
+# (Containerfile.pin), whose attestation is verified before it is pulled.
+#
+# Every input reaches a step through its environment and is never pasted
+# into a script.
+name: Secure the CI host
+description: >-
+  Run the digest-pinned secure-host image as root podman: no later step of the job has root or
+  reaches the cloud metadata service, and a world-writable file can be changed only by its owner
+
+inputs:
+  config:
+    description: >-
+      A host configuration file (TOML: the `[sandbox]`, `[egress]` and `[setup]` tables of
+      agentic-job), in place of the action's hosted.toml, written for GitHub's hosted ubuntu-26.04
+    default: ""
+  check:
+    description: Prove the result with `agentic-job sandbox check` before the step returns; `false` leaves that to the job
+    default: "true"
+  egress:
+    description: 'off, or write-policy to refuse HTTP writes except policy rules and runner endpoints'
+    default: "off"
+  egress-policy:
+    description: 'A TOML file of [[write]] rules, replacing the image policy; needs egress: write-policy'
+    default: ""
+  image-archive:
+    description: >-
+      An image archive (as `podman load` takes it) to run in place of the pinned image, for testing
+      an unreleased image. It is not verified: only for a job that built it or trusts its source
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Read the pin
+      id: pin
+      shell: bash
+      env:
+        ACTION: ${{ github.action_path }}
+      run: node "$ACTION/pin.mjs"
+    - name: Install podman where the runner lacks it
+      shell: bash
+      run: |
+        command -v podman > /dev/null && exit 0
+        sudo apt-get -o Acquire::Retries=3 update -q
+        sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends podman
+    # Against the digest, before the pull, so that the bytes run as root are
+    # those the signer's workflow built. Not for an archive: there is no
+    # attestation for an image that was never released.
+    - name: Verify the image attestation
+      if: ${{ inputs.image-archive == '' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        IMAGE: ${{ steps.pin.outputs.image }}
+        REPOSITORY: ${{ steps.pin.outputs.repository }}
+        CERT_IDENTITY: ${{ steps.pin.outputs.cert-identity }}
+        SOURCE_REF: ${{ steps.pin.outputs.source-ref }}
+      run: >-
+        gh attestation verify "oci://$IMAGE" --repo "$REPOSITORY" --cert-identity "$CERT_IDENTITY"
+        --source-ref "$SOURCE_REF" --deny-self-hosted-runners
+    - name: Get the image
+      id: image
+      shell: bash
+      env:
+        IMAGE: ${{ steps.pin.outputs.image }}
+        ARCHIVE: ${{ inputs.image-archive }}
+      run: |
+        if [ -n "$ARCHIVE" ]; then
+          echo "::warning::secure-host runs the unverified image archive $ARCHIVE"
+          IMAGE=$(sudo podman load --quiet --input "$ARCHIVE" | sed -n 's/^Loaded image: //p')
+          # One image, or which one would run is a guess.
+          if [ -z "$IMAGE" ] || [ "$(wc -l <<< "$IMAGE")" != 1 ]; then
+            echo "::error::$ARCHIVE must hold exactly one image"; exit 1
+          fi
+        else
+          sudo podman pull --quiet "$IMAGE" > /dev/null
+        fi
+        id=$(sudo podman image inspect --format '{{.Id}}' "$IMAGE")
+        [[ "$id" =~ ^[0-9a-f]{64}$ ]]
+        echo "id=$id" >> "$GITHUB_OUTPUT"
+    # By the image's own `agentic-job config --host`, which checks the file
+    # and adds the runner's user: sudo's SUDO_USER does not reach into the
+    # container. Copied first so that no path of the caller's becomes a
+    # podman volume argument.
+    - name: Write the configuration
+      shell: bash
+      env:
+        ACTION: ${{ github.action_path }}
+        CONFIG: ${{ inputs.config }}
+        EGRESS: ${{ inputs.egress }}
+        EGRESS_POLICY: ${{ inputs.egress-policy }}
+        ID: ${{ steps.image.outputs.id }}
+      run: node "$ACTION/config.mjs"
+    # The last thing in the job that has root. The image installs its binary
+    # on the host and sets the host up through the host's `nsenter -t 1`; the
+    # world-write policy and the rules outlive the container. No container
+    # network: setup runs in the host's.
+    - name: Secure the host
+      shell: bash
+      env:
+        ID: ${{ steps.image.outputs.id }}
+      run: sudo podman run --rm --privileged --pid=host --network=none -v /:/host "$ID" "$RUNNER_TEMP/secure-host/config.toml"
+    - name: Trust the per-job proxy in later JavaScript and Python steps
+      if: ${{ inputs.egress == 'write-policy' }}
+      shell: bash
+      env:
+        ACTION: ${{ github.action_path }}
+      # Copies only the CA variables of the image's root-owned runner.env.
+      run: node "$ACTION/runner-env.mjs"
+    - name: Prove it
+      if: ${{ inputs.check != 'false' }}
+      shell: bash
+      run: agentic-job sandbox check

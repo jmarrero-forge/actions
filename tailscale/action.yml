@@ -22,6 +22,13 @@ inputs:
     description: Node name; empty for tailscale/github-action's default, from the runner name.
     required: false
     default: ""
+  statedir:
+    description: >-
+      Directory for tailscaled's state, root's only; empty keeps it in memory.
+      A node that serves HTTPS needs one, since Tailscale makes and keeps its
+      certificate there.
+    required: false
+    default: ''
   args:
     description: Additional arguments to `tailscale up`; DNS acceptance is always disabled.
     required: false
@@ -52,6 +59,33 @@ runs:
         PROXY: ${{ inputs.proxy }}
         ACTION_PATH: ${{ github.action_path }}
       run: node "$ACTION_PATH/setup.mjs"
+    # Upstream makes the state directory as the runner's user; root makes it
+    # first, root's only, since it holds the node key and any certificate.
+    - name: Make tailscaled's state directory root's only
+      if: inputs.statedir != ''
+      shell: bash
+      env:
+        STATEDIR: ${{ inputs.statedir }}
+      run: sudo install -d -m 0700 -o root -g root "$STATEDIR"
+    # tailscale/github-action installs into /usr/local/bin and runs `sudo
+    # tailscale up`; RHEL's sudo secure_path leaves /usr/local/bin out, and
+    # tailscaled needs iptables, which RHEL 10 runners don't have. The links
+    # dangle until the join installs the binaries. Elsewhere nothing runs.
+    - name: Install RHEL prerequisites
+      shell: bash
+      env:
+        OS_RELEASE: /etc/os-release
+      run: |
+        if ! test -r "$OS_RELEASE"; then exit 0; fi
+        # shellcheck source=/dev/null
+        release=$(. "$OS_RELEASE" && echo "${ID:-} ${VERSION_ID:-}")
+        case "$release" in
+          "rhel 10" | "rhel 10."*) ;;
+          *) exit 0 ;;
+        esac
+        sudo dnf install -y iptables
+        sudo ln -sfn /usr/local/bin/tailscale /usr/bin/tailscale
+        sudo ln -sfn /usr/local/bin/tailscaled /usr/bin/tailscaled
     - name: Connect to the tailnet
       id: join
       uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
@@ -61,6 +95,7 @@ runs:
         tags: ${{ steps.settings.outputs.tags }}
         hostname: ${{ inputs.hostname }}
         args: ${{ inputs.args }} --accept-dns=false
+        statedir: ${{ inputs.statedir }}
     # The LocalAPI socket is 0666 and doesn't check who dials through it:
     # with it, any local user could `tailscale nc` to every node the tags
     # allow, as this node, and list the tailnet with `tailscale status`.

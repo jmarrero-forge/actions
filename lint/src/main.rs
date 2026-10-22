@@ -6,8 +6,9 @@
 //! a change of its own, plus whatever the caller adds in
 //! RUNNER_LABELS_DENY. Every other label, including self-hosted ones, is
 //! allowed. It catches a workflow written with the wrong label, not one
-//! built to evade it: a label assembled by `format()` or read from a
-//! variable at run time is out of its reach.
+//! built to evade it: a label assembled by `format()`, read from a
+//! variable at run time or passed along a chain of `needs` jobs is out of
+//! its reach.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -77,7 +78,8 @@ fn deny_list(extra: &str) -> Vec<String> {
     deny
 }
 
-/// A directory stands for its `.yml` and `.yaml` files (GitHub reads no
+/// A directory stands for its `.yml` and `.yaml` files, in any case, as
+/// workflows-check takes them (GitHub reads no
 /// subdirectories); a file is taken as it is. A missing path is an error,
 /// so a wrong path cannot pass by checking nothing.
 fn workflow_files(args: &[PathBuf]) -> std::io::Result<Vec<PathBuf>> {
@@ -87,10 +89,10 @@ fn workflow_files(args: &[PathBuf]) -> std::io::Result<Vec<PathBuf>> {
             let mut found = Vec::new();
             for entry in std::fs::read_dir(arg)? {
                 let path = entry?.path();
-                let yaml = matches!(
-                    path.extension().and_then(|e| e.to_str()),
-                    Some("yml" | "yaml")
-                );
+                let yaml = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(runner_labels::has_workflow_extension);
                 if yaml && path.is_file() {
                     found.push(path);
                 }
@@ -155,7 +157,31 @@ fn check(source: &str, deny: &[String]) -> Result<Vec<String>, String> {
                 // A matrix value may itself be an input.
                 text.push_str(&values);
             }
-            for input in referenced_inputs(&text) {
+            // A label can come from another job's outputs, as in the
+            // dynamic matrix a setup job writes to $GITHUB_OUTPUT. What a
+            // mistake looks like there is a literal somewhere in that job,
+            // so every string of its outputs, env and steps is taken in,
+            // one level deep: a mention of ubuntu-latest in its scripts
+            // for another purpose is refused too.
+            for name in referenced(&text, "needs") {
+                let Some(producer) = job_named(jobs, &name) else {
+                    continue;
+                };
+                let mut values = String::new();
+                strings(&producer["outputs"], &mut values);
+                strings(&producer["env"], &mut values);
+                for step in producer["steps"].as_vec().into_iter().flatten() {
+                    for key in ["run", "with", "env"] {
+                        strings(&step[key], &mut values);
+                    }
+                }
+                for label in denied(&values, deny) {
+                    hits.push(format!("{label} (in job {name}, read through needs)"));
+                }
+                // The producer's values may themselves be inputs.
+                text.push_str(&values);
+            }
+            for input in referenced(&text, "inputs") {
                 for trigger in ["workflow_call", "workflow_dispatch"] {
                     let mut values = String::new();
                     strings(&input_values(doc, trigger, &input), &mut values);
@@ -226,21 +252,29 @@ fn input_values(doc: &Yaml, trigger: &str, name: &str) -> Yaml {
         .unwrap_or(Yaml::BadValue)
 }
 
-/// Names of the inputs an expression reads as `inputs.NAME`,
-/// `inputs['NAME']` or the same under `github.event.`, lowercased.
-fn referenced_inputs(text: &str) -> Vec<String> {
+/// The job of that id, which GitHub's expressions match case-insensitively.
+fn job_named<'a>(jobs: &'a yaml_rust2::yaml::Hash, name: &str) -> Option<&'a Yaml> {
+    jobs.iter()
+        .find(|(id, _)| id.as_str().is_some_and(|id| id.eq_ignore_ascii_case(name)))
+        .map(|(_, job)| job)
+}
+
+/// Names an expression reads from a context as `CONTEXT.NAME` or
+/// `CONTEXT['NAME']`, lowercased: the inputs (also under `github.event.`)
+/// or the jobs of `needs`.
+fn referenced(text: &str, context: &str) -> Vec<String> {
     let text = text.to_ascii_lowercase();
     let mut names = Vec::new();
-    for (at, _) in text.match_indices("inputs") {
+    for (at, _) in text.match_indices(context) {
         let before = &text[..at];
         let part_of_other = before
             .chars()
             .next_back()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.');
-        if part_of_other && !before.ends_with("github.event.") {
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-');
+        if part_of_other && !(context == "inputs" && before.ends_with("github.event.")) {
             continue;
         }
-        let after = &text[at + "inputs".len()..];
+        let after = &text[at + context.len()..];
         let Some(after) = after
             .strip_prefix('.')
             .or_else(|| after.strip_prefix("['"))
@@ -420,12 +454,75 @@ jobs:
     fn workflow_files_takes_yaml_only() {
         let dir = std::env::temp_dir().join(format!("runner-labels-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub.yml")).unwrap();
-        for name in ["b.yaml", "a.yml", "notes.md"] {
+        for name in ["b.yaml", "a.yml", "c.YML", "notes.md"] {
             std::fs::write(dir.join(name), "").unwrap();
         }
         let files = workflow_files(std::slice::from_ref(&dir)).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(files, [dir.join("a.yml"), dir.join("b.yaml")]);
+        assert_eq!(
+            files,
+            [dir.join("a.yml"), dir.join("b.yaml"), dir.join("c.YML")]
+        );
+    }
+
+    #[test]
+    fn dynamic_matrix_from_needs() {
+        let src = r#"on: push
+jobs:
+  setup:
+    runs-on: ubuntu-26.04
+    outputs: {matrix: "${{ steps.m.outputs.matrix }}"}
+    steps:
+      - id: m
+        run: echo 'matrix={"os":["ubuntu-latest"]}' >> "$GITHUB_OUTPUT"
+  build:
+    needs: setup
+    strategy: {matrix: "${{ fromJSON(needs.setup.outputs.matrix) }}"}
+    runs-on: ${{ matrix.os }}
+    steps: []
+"#;
+        assert_eq!(
+            run(src),
+            [
+                "job `build` runs on a denied label: ubuntu-latest (in job setup, read through needs)"
+            ]
+        );
+    }
+
+    #[test]
+    fn needs_env_bracket_and_inputs() {
+        let src = r#"on:
+  workflow_dispatch:
+    inputs:
+      runner: {default: ubuntu-latest}
+jobs:
+  Target:
+    runs-on: ubuntu-26.04
+    env: {RUNNER: "${{ vars.R || '\"ubuntu-latest\"' }}"}
+    outputs: {runner: "${{ steps.t.outputs.runner }}"}
+    steps: [{id: t, run: echo "runner=$RUNNER" >> "$GITHUB_OUTPUT"}]
+  fed:
+    runs-on: ubuntu-26.04
+    outputs: {runner: "${{ inputs.runner }}"}
+    steps: []
+  noisy:
+    runs-on: ubuntu-26.04
+    outputs: {runner: '"ubuntu-26.04"'}
+    steps: [{run: echo ubuntu-latest is not used here}]
+  a: {needs: target, runs-on: "${{ fromJSON(needs.target.outputs.runner) }}"}
+  b: {needs: target, uses: ./x.yml, with: {runner: "${{ needs['target'].outputs.runner }}"}}
+  c: {needs: fed, runs-on: "${{ needs.fed.outputs.runner }}"}
+  d: {needs: noisy, runs-on: "${{ fromJSON(needs.noisy.outputs.runner) }}"}
+  e: {needs: [target], runs-on: ubuntu-26.04, steps: [{run: "echo ${{ needs.target.outputs.runner }}"}]}
+"#;
+        let f = run(src);
+        // d's producer mentions ubuntu-latest in a script: refused, as the
+        // check takes the whole job in.
+        assert_eq!(f.len(), 4, "{f:?}");
+        assert!(f[0].starts_with("job `a`") && f[0].contains("in job target"));
+        assert!(f[1].starts_with("job `b`"));
+        assert!(f[2].starts_with("job `c`") && f[2].contains("workflow_dispatch input runner"));
+        assert!(f[3].starts_with("job `d`"));
     }
 
     #[test]

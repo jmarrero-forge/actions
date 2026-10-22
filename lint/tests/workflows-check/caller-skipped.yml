@@ -1,0 +1,10 @@
+name: workflows
+on:
+  pull_request:
+permissions: {}
+jobs:
+  check:
+    if: false
+    permissions:
+      contents: read
+    uses: example/actions/.github/workflows/workflows-check.yml@1111111111111111111111111111111111111111

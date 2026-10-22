@@ -7,12 +7,18 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { settings } from './setup.mjs';
 
+// cgwalters-forge's broker moved; the others stay on the old host until
+// their tailnet membership of the new one is confirmed.
 test('known organizations supply join settings and proxy', () => {
-  for (const owner of ['bootc-dev', 'cgwalters-forge-stage', 'cgwalters-forge']) {
+  for (const [owner, proxy] of [
+    ['bootc-dev', 'http://100.114.231.4:18080'],
+    ['cgwalters-forge-stage', 'http://100.114.231.4:18080'],
+    ['cgwalters-forge', 'http://100.114.231.4:18080'],
+  ]) {
     const result = settings(owner);
     assert.equal(result.audience, `api.tailscale.com/${result['oauth-client-id']}`);
     assert.equal(result.tags, 'tag:bootc-dev-sandbox');
-    assert.equal(result.proxy, 'http://100.121.0.115:18080');
+    assert.equal(result.proxy, proxy);
   }
 });
 
@@ -27,22 +33,40 @@ test('each setting can be overridden and audience follows an overridden client',
   assert.equal(settings('bootc-dev', { tags: '' }).tags, 'tag:bootc-dev-sandbox');
 });
 
-test('an entry with empty settings takes them from the inputs, and fails clearly without', () => {
-  for (const owner of ['jmarrero-forge', 'jmarrero']) {
-    for (const overrides of [{}, { 'oauth-client-id': 'custom' }, { tags: 'tag:custom' }]) {
-      assert.throws(() => settings(owner, overrides), new RegExp(`No (oauth-client-id|tags) for GitHub organization ${owner}:`));
-    }
-    assert.deepEqual(settings(owner, { 'oauth-client-id': 'custom', tags: 'tag:custom' }), {
-      'oauth-client-id': 'custom', audience: 'api.tailscale.com/custom', tags: 'tag:custom', proxy: '',
-    });
-  }
-});
-
 test('unknown owners and output injection fail clearly', () => {
   for (const owner of ['unknown', '__proto__', 'constructor']) {
     assert.throws(() => settings(owner), /No tailnet settings for GitHub organization/);
   }
   assert.throws(() => settings('bootc-dev', { proxy: 'url\ninjected=value' }), /single-line/);
+});
+
+test('an unlisted organization joins with its own client ID and tags, both', () => {
+  assert.deepEqual(settings('other-org', { 'oauth-client-id': 'other', tags: 'tag:other' }), {
+    'oauth-client-id': 'other', audience: 'api.tailscale.com/other', tags: 'tag:other', proxy: '',
+  });
+  assert.equal(settings('other-org', {
+    'oauth-client-id': 'other', tags: 'tag:other', proxy: 'http://example.test',
+  }).proxy, 'http://example.test');
+  for (const overrides of [{ 'oauth-client-id': 'other' }, { tags: 'tag:other' },
+    { 'oauth-client-id': 'other', tags: '' }, { audience: 'a', proxy: 'http://example.test' }]) {
+    assert.throws(() => settings('other-org', overrides), /No tailnet settings/);
+  }
+  for (const owner of ['__proto__', 'constructor']) {
+    assert.equal(settings(owner, { 'oauth-client-id': 'other', tags: 'tag:other' }).tags, 'tag:other');
+  }
+  assert.throws(() => settings('other-org', { 'oauth-client-id': 'other', tags: 'tag:a\ninjected=value' }), /single-line/);
+});
+
+// The wrappers pass the calling repository's variables, never a
+// dispatcher's input, so that another deployment sets its login once.
+test('both wrappers join with the repository variables for the login', () => {
+  for (const file of ['cgwalters-agentic-job.yml', 'cgwalters-review.yml']) {
+    const text = readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8');
+    const join = text.split('- name: Join the tailnet\n')[1].split(/\n {6}- /)[0];
+    assert.match(join, /\n {10}oauth-client-id: \$\{\{ vars\.AGENTIC_JOB_TAILSCALE_OAUTH_CLIENT_ID \}\}\n/, file);
+    assert.match(join, /\n {10}tags: \$\{\{ vars\.AGENTIC_JOB_TAILSCALE_TAGS \}\}(\n|$)/, file);
+    assert.doesNotMatch(join, /inputs\./, file);
+  }
 });
 
 test('the setup subprocess appends outputs and rejects injection before writing', () => {
@@ -57,6 +81,8 @@ test('the setup subprocess appends outputs and rejects injection before writing'
         TAGS: 'tag:custom', PROXY: 'http://example.test',
       }, status: 0 },
       { owner: 'unknown', overrides: {}, status: 1, error: /No tailnet settings/ },
+      { owner: 'unknown', overrides: { OAUTH_CLIENT_ID: 'other', TAGS: 'tag:other' }, status: 0 },
+      { owner: 'unknown', overrides: { OAUTH_CLIENT_ID: 'other' }, status: 1, error: /No tailnet settings/ },
       ...['\n', '\r', '\r\n'].map(newline => ({
         owner: 'bootc-dev', overrides: { PROXY: `url${newline}injected=value` },
         status: 1, error: /single-line/,

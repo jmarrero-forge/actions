@@ -14,4 +14,6 @@ runs:
       shell: bash
       env:
         RUNNER_LABELS_DENY: ${{ inputs.deny }}
+        # For zizmor's online audits (Justfile).
+        GH_TOKEN: ${{ github.token }}
       run: just --justfile "$GITHUB_ACTION_PATH/Justfile" --working-directory . check

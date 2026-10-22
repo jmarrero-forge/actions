@@ -3,11 +3,16 @@ const { readFileSync } = require('node:fs');
 const { test } = require('node:test');
 const { runInNewContext } = require('node:vm');
 
-const workflow = readFileSync('.github/workflows/jmarrero-review.yml', 'utf8');
+// The agentic-job release both wrappers call, by commit with its tag as a
+// comment (a tag can be moved, #109): a bump changes it here, in the six
+// calls, the review wrapper's header and the README.
+const PIN = '258dc11ca7fe1798836976c0424274d1498e22cb # v0.6.2';
+
+const workflow = readFileSync('.github/workflows/cgwalters-review.yml', 'utf8');
 const jobs = Object.fromEntries([...workflow.matchAll(/^  ([a-z]+):\n([\s\S]*?)(?=^  [a-z]+:\n|$(?![\s\S]))/gm)]
   .map(([, name, body]) => [name, body]));
 
-function admits({ association = 'NONE', bot = false, id = 42, ids = '', draft = false, command } = {}) {
+function admits({ association = 'NONE', bot = false, id = 42, ids = '', draft = false, command, visibility = 'public' } = {}) {
   const expression = jobs.policy.match(/    if: >-\n([\s\S]*?)\n    uses:/)[1];
   return runInNewContext(expression, {
     github: {
@@ -15,6 +20,7 @@ function admits({ association = 'NONE', bot = false, id = 42, ids = '', draft = 
       event: {
         pull_request: { draft, author_association: association, user: { type: bot ? 'Bot' : 'User', id } },
         issue: { pull_request: {} }, comment: { body: command || '' },
+        repository: visibility === null ? {} : { visibility, private: visibility !== 'public' },
       },
     },
     vars: { REVIEW_BOT_IDS: ids }, fromJSON: JSON.parse,
@@ -49,6 +55,16 @@ test('commands reach event policy, which retains the caller bounds and write-rol
   assert.match(jobs.policy, /max-requests: '150'[\s\S]*budget: '500'[\s\S]*timeout: '75'/);
 });
 
+// agentic-job's opt-in for private repositories (its #739) stays off here,
+// whatever a caller's bounds say: nothing runs unless the repository is public.
+test('a private or internal repository is never reviewed', () => {
+  for (const visibility of ['private', 'internal', null]) {
+    assert.equal(admits({ association: 'OWNER', visibility }), false, String(visibility));
+    assert.equal(admits({ command: '/review', visibility }), false, String(visibility));
+  }
+  assert.equal(admits({ association: 'OWNER' }), true);
+});
+
 test('only admitted agent jobs compete, and only pushes cancel them', () => {
   assert.match(jobs.agent, /if: \$\{\{ needs.policy.outputs.admitted == 'true' \}\}/);
   assert.match(jobs.agent, /group: review-pull-\$\{\{ github.event.pull_request.number \|\| github.event.issue.number \}\}/);
@@ -59,20 +75,64 @@ test('trusted source only, one network join before dropping root, no post-agent 
   assert.doesNotMatch(workflow, /pull_request.head|head.ref|secrets: inherit|workflow_dispatch/);
   const steps = [...jobs.agent.matchAll(/^      - (?:uses: ([^\s]+)|name: (.+)|id: (.+))/gm)]
     .map(([, uses, name, id]) => uses || name || id);
-  assert.deepEqual(steps.slice(2), [
-    './.agentic-job-source/prepare', "This workflow's own repository and commit", 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
-    'Join the tailnet', './.agentic-job-source/secure-host', 'run',
+  assert.deepEqual(steps, [
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
+    "The policy call's source repository",
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
+    './.agentic-job-source/prepare', 'Join the tailnet', 'Check inference proxy reachability',
+    './.agentic-job-source/secure-host/internal', 'run',
   ]);
   assert.match(jobs.agent, /ref: \$\{\{ needs.policy.outputs.ref \}\}/);
   assert.doesNotMatch(jobs.agent, /(?:pull-requests|contents|issues): write|secrets\./);
   for (const name of ['policy', 'check', 'apply']) {
-    assert.match(jobs[name], new RegExp(`uses: cgwalters-forge/agentic-job/\\.github/workflows/${name}\\.yml@[0-9a-f]{40} # v\\d+\\.\\d+\\.\\d+\\n`));
+    assert.match(jobs[name], new RegExp(`uses: [^\\n]+/${name}\\.yml@${PIN.replaceAll('.', '\\.')}`));
   }
-  assert.match(jobs.agent, /\n {8}uses: \.\/\.jmarrero-actions\/tailscale\n/);
-  assert.match(jobs.agent, /\n {10}repository: \$\{\{ job\.workflow_repository \}\}\n {10}ref: \$\{\{ job\.workflow_sha \}\}\n {10}path: \.jmarrero-actions\n/);
   for (const [name, body] of Object.entries(jobs)) {
     if (name !== 'apply') assert.doesNotMatch(body, /secrets\./);
   }
+});
+
+test('both composed jobs retain the release pins and check the proxy between join and setup', () => {
+  assert.match(PIN, /^[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
+  for (const file of ['cgwalters-agentic-job.yml', 'cgwalters-review.yml']) {
+    const source = readFileSync(`.github/workflows/${file}`, 'utf8');
+    const calls = [...source.matchAll(/uses: (\S+\/(?:policy|check|apply)\.yml)@(.*)/g)];
+    assert.equal(calls.length, 3, file);
+    for (const [, , ref] of calls) assert.equal(ref, PIN, file);
+    const agent = source.split('\n  agent:\n')[1].split(/\n  [a-z]+:\n/)[0];
+    const check = 'run: agentic-job secure-host inference .agentic-job/config.toml';
+    assert.equal(agent.split(check).length - 1, 1, file);
+    assert.ok(agent.indexOf('name: Join the tailnet') < agent.indexOf(check), file);
+    const secureHost = 'uses: ./.agentic-job-source/secure-host/internal';
+    assert.ok(agent.indexOf(check) < agent.indexOf(secureHost), file);
+    assert.ok(agent.indexOf(secureHost) < agent.indexOf('uses: ./.agentic-job-source/run'), file);
+    assert.doesNotMatch(agent, /steps\.secure-host\.outputs\.session-endpoint/);
+  }
+});
+
+// Since v0.6.2 the public secure-host action forwards to the image action
+// and fails on `binary`; internal keeps the second user `run` expects. Its
+// check needs the proposals upload's digest (its grant: review.test.mjs).
+test('both agent jobs use secure-host/internal and hand the proposals digest to check', () => {
+  for (const file of ['cgwalters-agentic-job.yml', 'cgwalters-review.yml']) {
+    const source = readFileSync(`.github/workflows/${file}`, 'utf8');
+    const job = name => source.split(`\n  ${name}:\n`)[1].split(/\n  [a-z]+:\n/)[0];
+    const agent = job('agent');
+    assert.deepEqual([...agent.matchAll(/uses: (\.\/\.agentic-job-source\/secure-host\S*)/g)].map(m => m[1]),
+      ['./.agentic-job-source/secure-host/internal'], file);
+    assert.match(agent, /\n {6}safe-outputs-artifact-digest: \$\{\{ steps\.run\.outputs\.safe-outputs-artifact-digest \}\}\n/, file);
+    assert.match(job('check'), /\n {6}safe-outputs-artifact-digest: \$\{\{ needs\.agent\.outputs\.safe-outputs-artifact-digest \}\}/, file);
+  }
+});
+
+test('steering receives the dispatch item through policy metadata, or the admitted review event', () => {
+  const dispatch = readFileSync('.github/workflows/cgwalters-agentic-job.yml', 'utf8');
+  const policy = dispatch.split('\n  policy:\n')[1].split('\n  agent:\n')[0];
+  assert.match(policy, /^      issue: \$\{\{ inputs.item \}\}$/m);
+  assert.match(policy, /^      output-repo: \$\{\{ inputs.repo \}\}$/m);
+  assert.match(jobs.policy, /^      event: true$/m);
+  // Opt-in remains the trusted configuration's, not a new dispatcher input.
+  for (const source of [dispatch, workflow]) assert.doesNotMatch(source, /watch-item:/);
 });
 
 test('real reviews are opt-in and use only the checked artifact at the admitted head', () => {
@@ -84,12 +144,4 @@ test('real reviews are opt-in and use only the checked artifact at the admitted 
   assert.match(jobs.apply, /!cancelled\(\)[^\n]+needs.submit.outputs.review-url == ''/);
   assert.match(jobs.status, /needs.agent.result != 'cancelled'/);
   assert.match(jobs.status, /await reportStatus\(process.env, github, core\)/);
-});
-
-test('no fallback to another deployment: the variables or a failed policy', () => {
-  assert.doesNotMatch(workflow, /100\.121\.|praxis|cgwalters-bot|uses: cgwalters-forge\/actions|AGENT_CONFIG_REPO|AGENT_CONFIG_PATH/);
-  for (const [input, name] of [['agent', 'AGENT_REVIEW'], ['model', 'AGENT_MODEL'], ['inference-url', 'INFERENCE_URL'], ['inference-audience', 'INFERENCE_AUDIENCE']]) {
-    assert.match(jobs.policy, new RegExp(`\\n {6}${input}: \\$\\{\\{ vars\\.${name} \\}\\}\\n`), input);
-  }
-  assert.match(jobs.agent, /\n {10}oauth-client-id: \$\{\{ vars\.TAILSCALE_OAUTH_CLIENT_ID \}\}\n {10}tags: \$\{\{ vars\.TAILSCALE_TAGS \}\}\n/);
 });

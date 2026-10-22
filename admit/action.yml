@@ -1,0 +1,14 @@
+name: Admit
+description: >-
+  Fail unless the calling repository's owner is listed, by numeric id, in
+  this action's owners.json.
+runs:
+  using: composite
+  steps:
+    - name: Check the repository owner
+      shell: bash
+      env:
+        OWNER: ${{ github.repository_owner }}
+        OWNER_ID: ${{ github.repository_owner_id }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: node "$ACTION_PATH/admit.mjs"

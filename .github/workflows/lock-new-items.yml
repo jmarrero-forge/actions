@@ -1,0 +1,30 @@
+# Locks a newly opened issue, so that only collaborators
+# can comment on it: an outsider's comment is then never text an agent run
+# on that item reads (tracker#733, option A). Callers trigger it on
+# `issues: [opened]` and grant issues: write
+# (README.md, "Lock new items"); the job token does the
+# locking, so no PAT. Nothing of the item is read or run: only its number
+# reaches the step, and the step is one API call.
+name: lock-new-items
+on:
+  workflow_call:
+permissions: {}
+jobs:
+  lock:
+    # Other events must not lock the item they name. In particular, locking
+    # a pull request prevents the review job token from submitting a review.
+    if: >-
+      github.event.action == 'opened' &&
+      github.event_name == 'issues'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Lock the item
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ITEM: ${{ github.event.issue.number }}
+        # Locking a locked issue succeeds too, so a re-run is harmless.
+        run: gh api --method PUT "repos/$REPO/issues/$ITEM/lock" --silent
