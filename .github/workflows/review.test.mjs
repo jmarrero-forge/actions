@@ -53,13 +53,16 @@ test('the wrapper calls agentic-job at the commit the agent job calls', () => {
   assert.deepEqual(tags('./jmarrero-review.yml'), agent);
 });
 
-// Our own actions follow main (dependabot.yml), and zizmor accepts any ref
-// for them, so a commit pin would never move: the review runs would keep
-// joining with an old client, upstream pin and hardening.
-test('both wrappers use our own actions at main', () => {
+// Our admit action follows main (dependabot.yml), and zizmor accepts any
+// ref for it. The tailnet join is the one exception: ours at the commit the
+// wrapper runs at, since the broker admits the wrapper by commit.
+test('both wrappers use our admit at main and our tailnet join at their own commit', () => {
   for (const file of ['./jmarrero-agentic-job.yml', './jmarrero-review.yml']) {
-    const refs = [...read(file).matchAll(/uses: jmarrero-forge\/actions\/(\S+)@(\S+)/g)];
-    assert.deepEqual(refs.map(match => [match[1], match[2]]), [['admit', 'main'], ['tailscale', 'main']], file);
+    const text = read(file);
+    const refs = [...text.matchAll(/uses: jmarrero-forge\/actions\/(\S+)@(\S+)/g)];
+    assert.deepEqual(refs.map(match => [match[1], match[2]]), [['admit', 'main']], file);
+    assert.match(text, /\n {10}repository: \$\{\{ job\.workflow_repository \}\}\n {10}ref: \$\{\{ job\.workflow_sha \}\}\n {10}path: \.jmarrero-actions\n/, file);
+    assert.equal([...text.matchAll(/\n {8}uses: \.\/\.jmarrero-actions\/tailscale\n/g)].length, 1, file);
   }
 });
 
