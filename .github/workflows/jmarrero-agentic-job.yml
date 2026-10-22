@@ -494,15 +494,39 @@ jobs:
         with:
           binary-artifact-id: ${{ needs.policy.outputs.binary-artifact-id }}
           policy-artifact-id: ${{ needs.policy.outputs.policy-artifact-id }}
-      # Our one privileged step, this repository's own action at main, before anything of the agent's is on the
-      # machine. The action picks the client id and tags by organization,
-      # joins with --accept-dns=false and makes tailscaled's socket root's
-      # only. For a real agent, and for a session, which the operator
-      # reaches on the tailnet: the scripted agent alone needs no proxy. A
-      # session's hostname is the target job's, which its endpoint names.
+      # Our one privileged step, before anything of the agent's is on the
+      # machine: this repository's tailscale action from the commit this
+      # file runs at (job.workflow_*, as agentic-job's policy.yml takes its
+      # own source), not at main. The broker admits this file by commit, so
+      # that what an admitted job runs changes only with jmarrero's review
+      # there; a join at main would let a merge here change a root step of
+      # every admitted job, which holds the identity token. The action
+      # picks the client id and tags by organization, joins with
+      # --accept-dns=false and makes tailscaled's socket root's only. For a
+      # real agent, and for a session, which the operator reaches on the
+      # tailnet: the scripted agent alone needs no proxy. A session's
+      # hostname is the target job's, which its endpoint names.
+      - name: This workflow's own repository and commit
+        if: ${{ needs.target.outputs.agent != 'fake' || needs.target.outputs.session == 'true' }}
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          EXPECTED_REPOSITORY: jmarrero-forge/actions
+        run: |
+          echo "$WORKFLOW_REPOSITORY at $WORKFLOW_SHA"
+          [[ "$WORKFLOW_REPOSITORY" == "$EXPECTED_REPOSITORY" && "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo "::error::this workflow is not running from $EXPECTED_REPOSITORY at a full commit"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ needs.target.outputs.agent != 'fake' || needs.target.outputs.session == 'true' }}
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .jmarrero-actions
+          sparse-checkout: tailscale
+          persist-credentials: false
       - name: Join the tailnet
         if: ${{ needs.target.outputs.agent != 'fake' || needs.target.outputs.session == 'true' }}
-        uses: jmarrero-forge/actions/tailscale@main
+        uses: ./.jmarrero-actions/tailscale
         with:
           hostname: ${{ needs.target.outputs.session-host || format('agentic-job-{0}-{1}', github.run_id, github.run_attempt) }}
           # The calling repository's tailnet login, for an organization

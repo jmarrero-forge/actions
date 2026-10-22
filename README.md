@@ -247,6 +247,9 @@ changed what we retarget. `git diff SHA main` is then exactly ours:
   proxy address;
 - the defaults: claude, no broker address (`INFERENCE_URL`), the audience
   `jmarrero-praxis-broker`, and `AGENT_REVIEW` for reviews;
+- the tailnet join, this repository's action at the commit the wrapper
+  runs at rather than at main, since the broker admits the wrapper by
+  commit;
 - this repository's review bounds and caller, off until `AGENT_REVIEW`.
 
 Once a sync merges, the callers' pins (jmarrero-forge/tracker's

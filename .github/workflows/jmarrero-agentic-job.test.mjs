@@ -11,14 +11,13 @@ const workflow = readFileSync(new URL('./jmarrero-agentic-job.yml', import.meta.
 // refuse calls that resolved to different commits, which following main
 // produced for runs spanning an agentic-job merge (tracker#544). By the
 // release's commit with its tag as a comment, since a tag can be moved
-// (#109). Our own admit and tailscale actions, jmarrero-forge's, still
-// follow main.
-test('agentic-job is called at one release commit, our own actions at main', () => {
+// (#109). Our own admit action, jmarrero-forge's, follows main; the
+// tailnet join is ours at the commit this file runs at (below).
+test('agentic-job is called at one release commit, our admit action at main', () => {
   const refs = [...workflow.matchAll(/uses: (?:cgwalters-forge\/(?=agentic-job\/)|jmarrero-forge\/(?=actions\/))(\S+)@(\S+)(?: # (\S+))?\n/g)];
   assert.deepEqual(refs.map(match => match[1]), [
     'actions/admit',
     'agentic-job/.github/workflows/policy.yml',
-    'actions/tailscale',
     'agentic-job/.github/workflows/check.yml',
     'agentic-job/.github/workflows/apply.yml',
   ]);
@@ -254,6 +253,27 @@ test('a session without a usable domain, for review, or with idle-minutes out of
 
 test('the tailnet join is for a real agent or a session', () => {
   assert.match(job('agent'), /- name: Join the tailnet\n {8}if: \$\{\{ needs\.target\.outputs\.agent != 'fake' \|\| needs\.target\.outputs\.session == 'true' \}\}\n/);
+});
+
+// The broker admits this file by commit; a join at main would change a
+// root step of every admitted job without a new pin. So the join is this
+// repository's action at the commit the file runs at, checked to be ours
+// and a full commit before it is checked out.
+test('the tailnet join is this repository\'s action at the commit this file runs at', () => {
+  const steps = job('agent').split('\n      - ');
+  const at = text => steps.findIndex(step => step.startsWith(text));
+  const guard = at("name: This workflow's own repository and commit");
+  const checkout = steps.findIndex(step => step.includes('path: .jmarrero-actions\n'));
+  const join = at('name: Join the tailnet');
+  assert.ok(guard > 0 && guard + 1 === checkout && checkout + 1 === join, `${guard} ${checkout} ${join}`);
+  const when = "\n        if: ${{ needs.target.outputs.agent != 'fake' || needs.target.outputs.session == 'true' }}\n";
+  for (const index of [guard, checkout, join]) assert.ok(steps[index].includes(when), steps[index]);
+  assert.match(steps[guard], /\n {10}WORKFLOW_REPOSITORY: \$\{\{ job\.workflow_repository \}\}\n {10}WORKFLOW_SHA: \$\{\{ job\.workflow_sha \}\}\n {10}EXPECTED_REPOSITORY: jmarrero-forge\/actions\n/);
+  assert.match(steps[guard], /\^\[0-9a-f\]\{40\}\$ \]\] \|\|\n/);
+  assert.match(steps[checkout], /^uses: actions\/checkout@[0-9a-f]{40} # v\S+\n/);
+  assert.match(steps[checkout], /\n {10}repository: \$\{\{ job\.workflow_repository \}\}\n {10}ref: \$\{\{ job\.workflow_sha \}\}\n {10}path: \.jmarrero-actions\n {10}sparse-checkout: tailscale\n {10}persist-credentials: false$/);
+  assert.match(steps[join], /\n {8}uses: \.\/\.jmarrero-actions\/tailscale\n/);
+  assert.doesNotMatch(workflow, /uses: [^\n]*\/tailscale@/);
 });
 
 test('the session job posts the endpoint before apply concludes, and only for a session', () => {

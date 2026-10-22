@@ -79,7 +79,8 @@ test('trusted source only, one network join before dropping root, no post-agent 
     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
     "The policy call's source repository",
     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
-    './.agentic-job-source/prepare', 'Join the tailnet', 'Check inference proxy reachability',
+    './.agentic-job-source/prepare', "This workflow's own repository and commit",
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'Join the tailnet', 'Check inference proxy reachability',
     './.agentic-job-source/secure-host/internal', 'run',
   ]);
   assert.match(jobs.agent, /ref: \$\{\{ needs.policy.outputs.ref \}\}/);
