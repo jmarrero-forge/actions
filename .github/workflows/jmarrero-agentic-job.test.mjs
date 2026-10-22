@@ -11,9 +11,10 @@ const workflow = readFileSync(new URL('./jmarrero-agentic-job.yml', import.meta.
 // refuse calls that resolved to different commits, which following main
 // produced for runs spanning an agentic-job merge (tracker#544). By the
 // release's commit with its tag as a comment, since a tag can be moved
-// (#109). Our own admit and tailscale actions still follow main.
+// (#109). Our own admit and tailscale actions, jmarrero-forge's, still
+// follow main.
 test('agentic-job is called at one release commit, our own actions at main', () => {
-  const refs = [...workflow.matchAll(/uses: cgwalters-forge\/(\S+)@(\S+)(?: # (\S+))?\n/g)];
+  const refs = [...workflow.matchAll(/uses: (?:cgwalters-forge\/(?=agentic-job\/)|jmarrero-forge\/(?=actions\/))(\S+)@(\S+)(?: # (\S+))?\n/g)];
   assert.deepEqual(refs.map(match => match[1]), [
     'actions/admit',
     'agentic-job/.github/workflows/policy.yml',
@@ -21,6 +22,7 @@ test('agentic-job is called at one release commit, our own actions at main', () 
     'agentic-job/.github/workflows/check.yml',
     'agentic-job/.github/workflows/apply.yml',
   ]);
+  assert.doesNotMatch(workflow, /uses: cgwalters-forge\/actions\//);
   const pins = new Set(refs.filter(([, path]) => path.startsWith('agentic-job/')).map(match => `${match[2]} # ${match[3]}`));
   assert.equal(pins.size, 1);
   assert.match([...pins][0], /^[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
@@ -52,15 +54,16 @@ test('dependabot proposes new agentic-job tags as one group', () => {
   assert.match(config, /\n {6}exclude: \["cgwalters-forge\/agentic-job\*"\]\n/);
 });
 
-// A repository without INFERENCE_URL falls back to the broker its runner
-// joins the tailnet to reach: the wrappers and tailnets.json move together.
-test('the wrappers fall back to the cgwalters-forge tailnet broker', () => {
-  const tailnets = JSON.parse(readFileSync(new URL('../../tailscale/tailnets.json', import.meta.url), 'utf8'));
-  const broker = tailnets['cgwalters-forge'].proxy;
+// This public repository names no broker address: our broker is the one
+// at the calling repository's INFERENCE_URL, with jmarrero's audience.
+test('the wrappers take our broker from the calling repository\'s variable', () => {
   const review = readFileSync(new URL('./jmarrero-review.yml', import.meta.url), 'utf8');
-  const fallbacks = [...review.matchAll(/vars\.INFERENCE_URL \|\| '([^']*)'/g)].map(match => match[1]);
-  assert.deepEqual(fallbacks, [broker]);
-  assert.deepEqual([...workflow.matchAll(/\n {10}BROKER_URL: (\S+)\n/g)].map(match => match[1]), [broker]);
+  assert.match(review, /\n {6}inference-url: \$\{\{ vars\.INFERENCE_URL \}\}\n/);
+  assert.match(review, /\n {6}inference-audience: \$\{\{ vars\.INFERENCE_AUDIENCE \|\| 'jmarrero-praxis-broker' \}\}\n/);
+  assert.match(workflow, /\n {10}BROKER_URL: \$\{\{ vars\.INFERENCE_URL \}\}\n {10}BROKER_AUDIENCE: jmarrero-praxis-broker\n/);
+  for (const file of ['./jmarrero-agentic-job.yml', './jmarrero-review.yml', '../../tailscale/tailnets.json']) {
+    assert.doesNotMatch(readFileSync(new URL(file, import.meta.url), 'utf8'), /\b\d{1,3}(?:\.\d{1,3}){3}\b/, file);
+  }
 });
 
 // Any public repository can call the wrappers, and the tokens of its run
@@ -81,7 +84,7 @@ function needsGraph(text) {
 function admitsFirst(text, gate) {
   const graph = needsGraph(text);
   assert.match(graph[gate].body, /\n {4}runs-on: ubuntu-[0-9.]+\n/, `${gate} runs on a hosted runner`);
-  assert.match(graph[gate].body, /\n {4}steps:\n(?: {6}#[^\n]*\n)* {6}- uses: cgwalters-forge\/actions\/admit@main\n/);
+  assert.match(graph[gate].body, /\n {4}steps:\n(?: {6}#[^\n]*\n)* {6}- uses: jmarrero-forge\/actions\/admit@main\n/);
   assert.equal(graph[gate].needs.length, 0);
   assert.doesNotMatch(graph[gate].body, /\n {4}if:/);
   const reaches = name => name === gate || graph[name].needs.some(reaches);
@@ -104,7 +107,7 @@ test('the review wrapper admits the caller\'s owner before any other job', () =>
 test('every other action is pinned by full commit', () => {
   for (const file of ['./jmarrero-agentic-job.yml', './ci.yml', '../../tailscale/action.yml']) {
     const text = readFileSync(new URL(file, import.meta.url), 'utf8');
-    const others = [...text.matchAll(/uses: (?!cgwalters-forge\/|\.\/)(\S+)@(\S+)/g)];
+    const others = [...text.matchAll(/uses: (?!cgwalters-forge\/|jmarrero-forge\/|\.\/)(\S+)@(\S+)/g)];
     assert.ok(others.length > 0, file);
     for (const [, name, ref] of others) assert.match(ref, /^[0-9a-f]{40}$/, `${file}: ${name}`);
   }
@@ -314,6 +317,14 @@ test('our broker\'s audience is the default only with our broker\'s URL', async 
   // No identity token is minted for the proxy otherwise: nothing to refuse.
   assert.deepEqual(await pick({ INFERENCE_URL: 'https://api.example', INFERENCE_AUDIENCE: '', INFERENCE_REGISTER: 'api-key', AGENT: 'claude' }), ['https://api.example', '']);
   assert.deepEqual(await pick({ INFERENCE_URL: 'http://proxy', INFERENCE_AUDIENCE: '', AGENT: 'fake' }), ['', '']);
+  // Without the variable there is no broker to fall back to: a real agent
+  // stops here, the scripted one needs none.
+  for (const agent of ['claude', 'opencode']) {
+    await assert.rejects(target({ AGENT: agent, INFERENCE_URL: '', BROKER_URL: '' }), /Missing the inference-url input \(or the variable INFERENCE_URL\)/, agent);
+  }
+  assert.deepEqual(await pick({ AGENT: 'fake', INFERENCE_URL: '', BROKER_URL: '' }), ['', '']);
+  // An input URL with the variable unset is another broker: no default audience.
+  await assert.rejects(target({ INFERENCE_URL: 'http://proxy', INFERENCE_AUDIENCE: '', BROKER_URL: '' }), /needs its own inference-audience/);
   // Neither has a default of its own in the expressions, which would set
   // one without the other.
   assert.match(workflow, /\n {10}INFERENCE_URL: \$\{\{ inputs\.inference-url \|\| vars\.INFERENCE_URL \}\}\n/);

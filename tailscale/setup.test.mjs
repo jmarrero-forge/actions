@@ -7,37 +7,41 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { settings } from './setup.mjs';
 
-// cgwalters-forge's broker moved; the others stay on the old host until
-// their tailnet membership of the new one is confirmed.
-test('known organizations supply join settings and proxy', () => {
-  for (const [owner, proxy] of [
-    ['bootc-dev', 'http://100.114.231.4:18080'],
-    ['cgwalters-forge-stage', 'http://100.114.231.4:18080'],
-    ['cgwalters-forge', 'http://100.114.231.4:18080'],
-  ]) {
-    const result = settings(owner);
-    assert.equal(result.audience, `api.tailscale.com/${result['oauth-client-id']}`);
-    assert.equal(result.tags, 'tag:bootc-dev-sandbox');
-    assert.equal(result.proxy, proxy);
+// Our organizations' entries: the tag is the tailnet policy's, the client
+// ID the calling repository's variable, and no proxy is written here.
+test('known organizations supply their tags, and the client ID comes from the caller', () => {
+  for (const owner of ['jmarrero-forge', 'jmarrero']) {
+    const result = settings(owner, { 'oauth-client-id': 'custom' });
+    assert.deepEqual(result, {
+      'oauth-client-id': 'custom', audience: 'api.tailscale.com/custom', tags: 'tag:agentic-job', proxy: '',
+    });
   }
 });
 
 test('each setting can be overridden and audience follows an overridden client', () => {
-  assert.deepEqual(settings('bootc-dev', {
+  assert.deepEqual(settings('jmarrero-forge', {
     'oauth-client-id': 'custom', tags: 'tag:custom', proxy: 'http://example.test',
   }), {
     'oauth-client-id': 'custom', audience: 'api.tailscale.com/custom',
     tags: 'tag:custom', proxy: 'http://example.test',
   });
-  assert.equal(settings('bootc-dev', { audience: 'custom' }).audience, 'custom');
-  assert.equal(settings('bootc-dev', { tags: '' }).tags, 'tag:bootc-dev-sandbox');
+  assert.equal(settings('jmarrero-forge', { 'oauth-client-id': 'custom', audience: 'custom' }).audience, 'custom');
+  assert.equal(settings('jmarrero-forge', { 'oauth-client-id': 'custom', tags: '' }).tags, 'tag:agentic-job');
+});
+
+test('an entry without a client ID fails clearly unless the caller gives one', () => {
+  for (const owner of ['jmarrero-forge', 'jmarrero']) {
+    for (const overrides of [{}, { tags: 'tag:custom' }, { 'oauth-client-id': '' }]) {
+      assert.throws(() => settings(owner, overrides), new RegExp(`No oauth-client-id for GitHub organization ${owner}:`));
+    }
+  }
 });
 
 test('unknown owners and output injection fail clearly', () => {
   for (const owner of ['unknown', '__proto__', 'constructor']) {
     assert.throws(() => settings(owner), /No tailnet settings for GitHub organization/);
   }
-  assert.throws(() => settings('bootc-dev', { proxy: 'url\ninjected=value' }), /single-line/);
+  assert.throws(() => settings('jmarrero-forge', { 'oauth-client-id': 'custom', proxy: 'url\ninjected=value' }), /single-line/);
 });
 
 test('an unlisted organization joins with its own client ID and tags, both', () => {
@@ -75,8 +79,9 @@ test('the setup subprocess appends outputs and rejects injection before writing'
   const prefix = 'existing=value\n';
   try {
     for (const scenario of [
-      { owner: 'bootc-dev', overrides: {}, status: 0 },
-      { owner: 'cgwalters-forge', overrides: {
+      { owner: 'jmarrero-forge', overrides: { OAUTH_CLIENT_ID: 'custom' }, status: 0 },
+      { owner: 'jmarrero-forge', overrides: {}, status: 1, error: /No oauth-client-id/ },
+      { owner: 'jmarrero', overrides: {
         OAUTH_CLIENT_ID: 'custom', AUDIENCE: 'custom-audience',
         TAGS: 'tag:custom', PROXY: 'http://example.test',
       }, status: 0 },
@@ -84,7 +89,7 @@ test('the setup subprocess appends outputs and rejects injection before writing'
       { owner: 'unknown', overrides: { OAUTH_CLIENT_ID: 'other', TAGS: 'tag:other' }, status: 0 },
       { owner: 'unknown', overrides: { OAUTH_CLIENT_ID: 'other' }, status: 1, error: /No tailnet settings/ },
       ...['\n', '\r', '\r\n'].map(newline => ({
-        owner: 'bootc-dev', overrides: { PROXY: `url${newline}injected=value` },
+        owner: 'jmarrero-forge', overrides: { OAUTH_CLIENT_ID: 'custom', PROXY: `url${newline}injected=value` },
         status: 1, error: /single-line/,
       })),
     ]) {
