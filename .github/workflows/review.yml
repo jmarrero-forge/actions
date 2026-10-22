@@ -19,7 +19,7 @@ jobs:
     # wrapper never review that pull request, and merged edits review the next
     # one, with no pin to move. The agentic-job tag it calls is checked
     # against the agent job's in review.test.mjs, as is passing no secret.
-    uses: ./.github/workflows/cgwalters-review.yml
+    uses: ./.github/workflows/jmarrero-review.yml
     # Exactly the union of the wrapper's job grants (review.test.mjs).
     permissions:
       contents: read

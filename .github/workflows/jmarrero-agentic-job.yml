@@ -1,4 +1,4 @@
-# cgwalters-agentic-job: an agent run of cgwalters-forge/agentic-job with
+# jmarrero-agentic-job: an agent run of cgwalters-forge/agentic-job with
 # everything that is this deployment's and not the generic project's: the
 # tailnet join, the inference proxy and its audience, the runner, the agent
 # and its model. Every repository of ours calls this one file at main. Any
@@ -38,7 +38,7 @@
 # `pull-requests: write`, `actions: read` and `id-token: write`, which is
 # the union of the jobs here; each job takes only its own part. `vars` here
 # are the calling repository's.
-name: cgwalters-agentic-job
+name: jmarrero-agentic-job
 
 on:
   workflow_call:
@@ -228,7 +228,7 @@ jobs:
             // the API, as not every event's payload names the repository.
             const { data: caller } = await github.rest.repos.get(context.repo);
             if (caller.private !== false || caller.visibility !== 'public') {
-              throw new Error('cgwalters-agentic-job runs only from a public repository');
+              throw new Error('jmarrero-agentic-job runs only from a public repository');
             }
             const profile = process.env.PROFILE;
             if (!['implement', 'triage', 'research', 'review', 'fix'].includes(profile)) {

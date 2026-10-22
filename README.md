@@ -15,10 +15,10 @@ this repository's issues.
 | [admit](admit/README.md) | Fails unless the calling repository's owner id is in its owners.json; both reusable wrappers run it first; CI runs its unit tests | Brokers and tailnet federation match the same ids |
 | [tailscale](tailscale/README.md) | Settings by organization; CI runs its unit tests and checks the socket and CLI are closed after a join that fails, no real join (no tailnet credentials here) | Replace devspace.yml's and agent.yml's tailscale/github-action steps |
 
-## cgwalters-agentic-job
+## jmarrero-agentic-job
 
 One reusable workflow is here too:
-[cgwalters-agentic-job](.github/workflows/cgwalters-agentic-job.yml), an
+[jmarrero-agentic-job](.github/workflows/jmarrero-agentic-job.yml), an
 agent run of cgwalters-forge/agentic-job with this deployment's tailnet
 join, inference proxy, runner, agent and model. Our repositories call it
 at main. Any public repository can call it too, and its run's identity
@@ -82,7 +82,7 @@ jobs:
 
 ## Review
 
-[cgwalters-review](.github/workflows/cgwalters-review.yml) is the reusable
+[jmarrero-review](.github/workflows/jmarrero-review.yml) is the reusable
 event-review wrapper. It composes agentic-job **v0.6.2**'s policy, check,
 apply and review helpers, so that the tailnet and the inference broker admit
 this file's `job_workflow_ref`; agentic-job's review workflow can now run a

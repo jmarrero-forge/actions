@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-// The review gate: a thin caller of this repository's cgwalters-review.yml,
+// The review gate: a thin caller of this repository's jmarrero-review.yml,
 // with this repository's copies of the bounds and the task, which that
 // workflow reads from the base branch (agentic-job's docs/review.md,
 // "Another repository").
@@ -31,7 +31,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request_target' ||
       (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review'))
-    uses: ./.github/workflows/cgwalters-review.yml
+    uses: ./.github/workflows/jmarrero-review.yml
     permissions:
       contents: read
       issues: read
@@ -47,17 +47,17 @@ jobs:
 test('the wrapper calls agentic-job at the commit the agent job calls', () => {
   const tags = file => [...read(file).matchAll(/uses: cgwalters-forge\/agentic-job\/\S+@(.*)/g)]
     .map(match => match[1]);
-  const agent = tags('./cgwalters-agentic-job.yml');
+  const agent = tags('./jmarrero-agentic-job.yml');
   assert.equal(agent.length, 3);
   assert.match(agent[0], /^[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
-  assert.deepEqual(tags('./cgwalters-review.yml'), agent);
+  assert.deepEqual(tags('./jmarrero-review.yml'), agent);
 });
 
 // Our own actions follow main (dependabot.yml), and zizmor accepts any ref
 // for them, so a commit pin would never move: the review runs would keep
 // joining with an old client, upstream pin and hardening.
 test('both wrappers use our own actions at main', () => {
-  for (const file of ['./cgwalters-agentic-job.yml', './cgwalters-review.yml']) {
+  for (const file of ['./jmarrero-agentic-job.yml', './jmarrero-review.yml']) {
     const refs = [...read(file).matchAll(/uses: cgwalters-forge\/actions\/(\S+)@(\S+)/g)];
     assert.deepEqual(refs.map(match => [match[1], match[2]]), [['admit', 'main'], ['tailscale', 'main']], file);
   }
@@ -69,7 +69,7 @@ test('both wrappers use our own actions at main', () => {
 // to verify the proposals upload's digest. Nothing more than that, as no
 // secret goes to check.
 test('both wrappers grant check exactly what its jobs ask for', () => {
-  for (const file of ['./cgwalters-agentic-job.yml', './cgwalters-review.yml']) {
+  for (const file of ['./jmarrero-agentic-job.yml', './jmarrero-review.yml']) {
     const check = read(file).split('\n  check:\n')[1].split(/\n {2}[a-z-]+:\n/)[0];
     assert.match(check, /\n {4}permissions:\n {6}contents: read\n {6}actions: read\n {6}id-token: write\n {4}(?:#[^\n]*\n {4})*uses: /, file);
     assert.doesNotMatch(check, /secrets/, file);
@@ -82,7 +82,7 @@ test('the caller grants exactly the union of the wrapper\'s job grants', () => {
   const grants = text => [...text.matchAll(/\n {4}permissions:\n((?: {6}\S.*\n?)+)/g)]
     .flatMap(match => match[1].trim().split('\n').map(line => line.trim().split(': ')));
   const union = {};
-  for (const [scope, level] of grants(read('./cgwalters-review.yml'))) {
+  for (const [scope, level] of grants(read('./jmarrero-review.yml'))) {
     if (union[scope] !== 'write') union[scope] = level;
   }
   assert.deepEqual(Object.fromEntries(grants(caller)), union);
@@ -93,7 +93,7 @@ test('the caller grants exactly the union of the wrapper\'s job grants', () => {
 // source checks first that policy reported the repository it calls, at a
 // full commit. Every such job, so that a recomposition cannot drop it.
 test('every job checks the policy call\'s source before checking it out', () => {
-  for (const file of ['./cgwalters-agentic-job.yml', './cgwalters-review.yml']) {
+  for (const file of ['./jmarrero-agentic-job.yml', './jmarrero-review.yml']) {
     const workflow = read(file);
     const called = workflow.match(/\n {4}uses: ([^/\s]+\/[^/\s]+)\/\.github\/workflows\/policy\.yml@/)?.[1];
     assert.ok(called, `${file}: policy call`);
@@ -116,7 +116,7 @@ test('every job checks the policy call\'s source before checking it out', () => 
 });
 
 test('the composed review links its pinned helper to the agent job', () => {
-  const workflow = read('./cgwalters-review.yml');
+  const workflow = read('./jmarrero-review.yml');
   const agent = workflow.split('\n  agent:\n')[1].split('\n  check:\n')[0];
   const submit = workflow.split('\n  submit:\n')[1].split('\n  apply:\n')[0];
   assert.match(agent, /\n {6}job: \$\{\{ job\.check_run_id \}\}\n/);
@@ -175,5 +175,5 @@ test('the task treats the head as hostile and defers to the merge policy', () =>
 // stays on the broker: agentic-job's provider-key mode (its #740) is not
 // wired here.
 test('the review wrapper stays on the inference broker', () => {
-  assert.doesNotMatch(read('./cgwalters-review.yml'), /INFERENCE_API_KEY|inference-register|inference-provider|inference-api-key/);
+  assert.doesNotMatch(read('./jmarrero-review.yml'), /INFERENCE_API_KEY|inference-register|inference-provider|inference-api-key/);
 });
