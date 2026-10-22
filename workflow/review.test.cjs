@@ -8,7 +8,7 @@ const { runInNewContext } = require('node:vm');
 // calls, the review wrapper's header and the README.
 const PIN = '258dc11ca7fe1798836976c0424274d1498e22cb # v0.6.2';
 
-const workflow = readFileSync('.github/workflows/cgwalters-review.yml', 'utf8');
+const workflow = readFileSync('.github/workflows/jmarrero-review.yml', 'utf8');
 const jobs = Object.fromEntries([...workflow.matchAll(/^  ([a-z]+):\n([\s\S]*?)(?=^  [a-z]+:\n|$(?![\s\S]))/gm)]
   .map(([, name, body]) => [name, body]));
 
@@ -94,7 +94,7 @@ test('trusted source only, one network join before dropping root, no post-agent 
 
 test('both composed jobs retain the release pins and check the proxy between join and setup', () => {
   assert.match(PIN, /^[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
-  for (const file of ['cgwalters-agentic-job.yml', 'cgwalters-review.yml']) {
+  for (const file of ['jmarrero-agentic-job.yml', 'jmarrero-review.yml']) {
     const source = readFileSync(`.github/workflows/${file}`, 'utf8');
     const calls = [...source.matchAll(/uses: (\S+\/(?:policy|check|apply)\.yml)@(.*)/g)];
     assert.equal(calls.length, 3, file);
@@ -114,7 +114,7 @@ test('both composed jobs retain the release pins and check the proxy between joi
 // and fails on `binary`; internal keeps the second user `run` expects. Its
 // check needs the proposals upload's digest (its grant: review.test.mjs).
 test('both agent jobs use secure-host/internal and hand the proposals digest to check', () => {
-  for (const file of ['cgwalters-agentic-job.yml', 'cgwalters-review.yml']) {
+  for (const file of ['jmarrero-agentic-job.yml', 'jmarrero-review.yml']) {
     const source = readFileSync(`.github/workflows/${file}`, 'utf8');
     const job = name => source.split(`\n  ${name}:\n`)[1].split(/\n  [a-z]+:\n/)[0];
     const agent = job('agent');
@@ -126,7 +126,7 @@ test('both agent jobs use secure-host/internal and hand the proposals digest to 
 });
 
 test('steering receives the dispatch item through policy metadata, or the admitted review event', () => {
-  const dispatch = readFileSync('.github/workflows/cgwalters-agentic-job.yml', 'utf8');
+  const dispatch = readFileSync('.github/workflows/jmarrero-agentic-job.yml', 'utf8');
   const policy = dispatch.split('\n  policy:\n')[1].split('\n  agent:\n')[0];
   assert.match(policy, /^      issue: \$\{\{ inputs.item \}\}$/m);
   assert.match(policy, /^      output-repo: \$\{\{ inputs.repo \}\}$/m);

@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-const workflow = readFileSync(new URL('./cgwalters-agentic-job.yml', import.meta.url), 'utf8');
+const workflow = readFileSync(new URL('./jmarrero-agentic-job.yml', import.meta.url), 'utf8');
 
 // agentic-job is called at one release: check, apply, prepare and run
 // refuse calls that resolved to different commits, which following main
@@ -57,7 +57,7 @@ test('dependabot proposes new agentic-job tags as one group', () => {
 test('the wrappers fall back to the cgwalters-forge tailnet broker', () => {
   const tailnets = JSON.parse(readFileSync(new URL('../../tailscale/tailnets.json', import.meta.url), 'utf8'));
   const broker = tailnets['cgwalters-forge'].proxy;
-  const review = readFileSync(new URL('./cgwalters-review.yml', import.meta.url), 'utf8');
+  const review = readFileSync(new URL('./jmarrero-review.yml', import.meta.url), 'utf8');
   const fallbacks = [...review.matchAll(/vars\.INFERENCE_URL \|\| '([^']*)'/g)].map(match => match[1]);
   assert.deepEqual(fallbacks, [broker]);
   assert.deepEqual([...workflow.matchAll(/\n {10}BROKER_URL: (\S+)\n/g)].map(match => match[1]), [broker]);
@@ -97,12 +97,12 @@ test('the dispatch wrapper admits the caller\'s owner before any other job', () 
 });
 
 test('the review wrapper admits the caller\'s owner before any other job', () => {
-  admitsFirst(readFileSync(new URL('./cgwalters-review.yml', import.meta.url), 'utf8'), 'admit');
+  admitsFirst(readFileSync(new URL('./jmarrero-review.yml', import.meta.url), 'utf8'), 'admit');
 });
 
 // Third-party actions stay pinned by full commit; dependabot moves them.
 test('every other action is pinned by full commit', () => {
-  for (const file of ['./cgwalters-agentic-job.yml', './ci.yml', '../../tailscale/action.yml']) {
+  for (const file of ['./jmarrero-agentic-job.yml', './ci.yml', '../../tailscale/action.yml']) {
     const text = readFileSync(new URL(file, import.meta.url), 'utf8');
     const others = [...text.matchAll(/uses: (?!cgwalters-forge\/|\.\/)(\S+)@(\S+)/g)];
     assert.ok(others.length > 0, file);

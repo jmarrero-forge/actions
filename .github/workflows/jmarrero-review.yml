@@ -1,9 +1,9 @@
 # Composed from agentic-job v0.6.2's review.yml: keep event policy and
 # publication semantics there in sync when updating the three pinned calls.
 # They name the release's commit, not its tag, for the reason
-# cgwalters-agentic-job.yml's header gives.
+# jmarrero-agentic-job.yml's header gives.
 # No dispatcher inputs: identity/configuration comes from repository variables.
-name: cgwalters-review
+name: jmarrero-review
 on:
   workflow_call:
     secrets:
@@ -155,13 +155,13 @@ jobs:
       # One privileged network step, before secure-host drops root. The
       # tailnet and broker must admit this wrapper's job_workflow_ref with
       # an owner id admit/owners.json lists. Our own
-      # action at main, as in cgwalters-agentic-job.yml: nothing moves a
+      # action at main, as in jmarrero-agentic-job.yml: nothing moves a
       # commit pin here, so it would keep a retired client or hardening.
       - name: Join the tailnet
         uses: cgwalters-forge/actions/tailscale@main
         with:
           hostname: agentic-job-${{ github.run_id }}-${{ github.run_attempt }}
-          # As in cgwalters-agentic-job.yml: unset, tailnets.json's entry.
+          # As in jmarrero-agentic-job.yml: unset, tailnets.json's entry.
           oauth-client-id: ${{ vars.AGENTIC_JOB_TAILSCALE_OAUTH_CLIENT_ID }}
           tags: ${{ vars.AGENTIC_JOB_TAILSCALE_TAGS }}
       # Fail on a missing proxy route before setup, not in its sandbox probes.
@@ -183,7 +183,7 @@ jobs:
     needs: [policy, agent]
     if: ${{ !cancelled() && needs.policy.result == 'success' && needs.agent.outputs.safe-outputs-artifact-id != '' }}
     # check.yml's detect job asks for it; only that job takes it (see
-    # cgwalters-agentic-job.yml). `actions: read` is for the digest check.
+    # jmarrero-agentic-job.yml). `actions: read` is for the digest check.
     permissions:
       contents: read
       actions: read

@@ -11,7 +11,7 @@ updates:
       interval: daily
     # policy, check and apply must name the same commit (the run refuses
     # calls at differing commits), so a new tag is one pull request for all
-    # three, in both cgwalters-agentic-job.yml and cgwalters-review.yml.
+    # three, in both jmarrero-agentic-job.yml and jmarrero-review.yml.
     groups:
       agentic-job:
         patterns: ["cgwalters-forge/agentic-job*"]
