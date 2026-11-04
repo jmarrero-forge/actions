@@ -30,6 +30,8 @@ stop-services = [
     "multipathd.service",
     "uuidd.socket",
     "uuidd.service",
+    "acpid.socket",
+    "acpid.service",
     "iscsid.socket",
     "iscsid.service",
 ]

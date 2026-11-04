@@ -17,6 +17,68 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Exercise the wrappers' actual prepare -> config --host -> forwarder
+  # sequence on a fresh VM. No inference, tailnet credentials or agent
+  # uploads: prove the sandbox's CLI matches the policy binary too.
+  wrapper-policy:
+    permissions:
+      actions: read
+      contents: read
+    uses: cgwalters-forge/agentic-job/.github/workflows/policy.yml@57119eeffa17ea41b383cfdaf8370b8abeba8868 # v0.6.9
+    with:
+      id: wrapper-smoke
+      runner: '"ubuntu-26.04"'
+      repo: cgwalters-forge/actions
+      allow: workflow/review.toml
+      kind: analysis
+      outputs: noop
+      max-outputs: '1'
+      max-requests: '0'
+      budget: '1'
+      task: Prove the installed binary can execute as the sandbox user.
+      config: .agentic-job-source/secure-host/hosted.toml
+      artifact-prefix: wrapper-smoke-
+
+  wrapper-sandbox:
+    needs: wrapper-policy
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: cgwalters-forge/agentic-job
+          ref: 57119eeffa17ea41b383cfdaf8370b8abeba8868 # v0.6.9
+          path: .agentic-job-source
+          persist-credentials: false
+      - name: Create the job directory
+        run: install -d -m 0711 /var/tmp/agentic-job
+      - uses: ./.agentic-job-source/prepare
+        with:
+          job-dir: /var/tmp/agentic-job
+          binary-artifact-id: ${{ needs.wrapper-policy.outputs.binary-artifact-id }}
+          policy-artifact-id: ${{ needs.wrapper-policy.outputs.policy-artifact-id }}
+      - name: Keep the job inputs private
+        run: |
+          chmod 0600 /var/tmp/agentic-job/*
+          chmod 0755 /var/tmp/agentic-job/agentic-job
+      - name: Check inference proxy reachability
+        run: agentic-job secure-host inference /var/tmp/agentic-job/config.toml
+      - name: The host's configuration
+        run: agentic-job config --host --from /var/tmp/agentic-job/config.toml --string sandbox.env.PATH=/var/tmp/agentic-job:/usr/local/bin:/usr/bin:/bin > "$RUNNER_TEMP/agentic-job-host.toml"
+      - uses: ./.agentic-job-source/secure-host
+        with:
+          config: ${{ runner.temp }}/agentic-job-host.toml
+      # The same path run/action.yml executes with the wrappers' job-dir,
+      # through the forwarder's v0.6.4 image helper, not unrestricted sudo.
+      - name: The sandbox CLI matches the policy binary
+        run: python3 workflow/sandbox-binary-check.py
+
   # The README's example: an untrusted job with nothing worth stealing,
   # whose output a second job takes by artifact ID and digest, as data.
   build:
@@ -31,19 +93,44 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: just@1.58.0
       - run: just secure-host-root before
       - run: just secure-host-metadata before
-      - run: node secure-host/reads-probe.mjs before
+      # A detached process of the runner's user holding a canary, bounded
+      # even on failed jobs; it keeps RUNNER_TRACKING_ID for runner cleanup.
+      - name: Another process's environment is readable before the action
+        env:
+          SECURE_HOST_READ_PROBE: not-a-secret
+        run: |
+          setsid /usr/bin/sleep 600 < /dev/null > /dev/null 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/secure-host-read-probe.pid"
+          grep -qxzF SECURE_HOST_READ_PROBE=not-a-secret "/proc/$!/environ"
       - uses: ./secure-host
         with:
           egress: write-policy
       # What would be `make test`: steps of the runner's user, without root.
       - run: just secure-host-root after
       - run: just secure-host-metadata after
-      - run: node secure-host/reads-probe.mjs after
+      # Setup's hidepid=invisible decides with the same check as the read, so
+      # a refused process may be missing from /proc altogether. Alive around
+      # the read, since any other failure proves nothing; left alive, as the
+      # job's normal cleanup must work with the rule on.
+      - name: Another process's environment is refused after the action
+        run: |
+          export LC_ALL=C
+          pid=$(< "$RUNNER_TEMP/secure-host-read-probe.pid")
+          if ! [[ "$pid" =~ ^[0-9]+$ ]] || [ "$pid" -le 1 ]; then echo "::error::invalid probe PID"; exit 1; fi
+          kill -0 "$pid"
+          if err=$(cat "/proc/$pid/environ" 2>&1 > /dev/null); then
+            echo "::error::another runner process environment is still readable"; exit 1
+          fi
+          case "$err" in
+            *": Permission denied" | *": No such file or directory") ;;
+            *) echo "::error::unexpected: $err"; exit 1 ;;
+          esac
+          kill -0 "$pid"
       - run: just secure-host-egress
       - run: mkdir out && git rev-parse HEAD > out/commit
       - id: up
@@ -90,7 +177,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: just@1.58.0
       - run: just secure-host-options before
@@ -112,7 +199,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: just@1.58.0
       - uses: ./secure-host
@@ -138,7 +225,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: just@1.58.0
       - uses: ./secure-host
@@ -164,7 +251,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: just@1.58.0
       - run: just secure-host-world-write before

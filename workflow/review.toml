@@ -1,17 +1,17 @@
 # Automatic events admit forks; the called review workflow restricts automatic
 # starts to OWNER/MEMBER/COLLABORATOR to prevent shared-budget exhaustion.
 hosts = ["github.com"]
-repos = ["jmarrero-forge/actions"]
+repos = ["cgwalters-forge/actions"]
 bases = ["main"]
 max_outputs = 1
 max_patch_bytes = 1024
 max_patch_files = 1
 
-[outputs]
+[github.outputs]
 add_comment = { max = 1 }
 noop = { max = 1 }
 
-[trigger]
+[github.trigger]
 events = ["pull_request_target", "pull_request"]
 roles = ["all"]
 # A `[bot]` login is a GitHub App's; no user can take it.

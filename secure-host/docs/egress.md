@@ -20,7 +20,7 @@ metadata service.
 
 `egress: write-policy` turns it on. The action then sets
 `egress.write-policy`, `egress.proxy` and `egress.rust-proxy` in the
-host configuration ([`config.mjs`](../config.mjs)); the image refuses
+host configuration ([`action.yml`](../action.yml)); the image refuses
 it without `sandbox.lock-runner`, since a runner's user with sudo could
 remove the rules. Off by default.
 
@@ -50,7 +50,7 @@ curl, git, OpenSSL, Go and .NET read, and writes
 `/etc/egress-proxy/runner.env` for what does not read it. A step cannot
 change a later step's environment except through `GITHUB_ENV`, so the
 action appends that file's trust-store variables to it
-([`runner-env.mjs`](../runner-env.mjs)): `NODE_EXTRA_CA_CERTS` for Node,
+([`action.yml`](../action.yml)): `NODE_EXTRA_CA_CERTS` for Node,
 and so every JavaScript action, `REQUESTS_CA_BUNDLE` for Python's
 requests and pip, and `SSL_CERT_FILE`. It refuses any other line of the
 file. A tool that trusts neither fails closed; do not work around it by

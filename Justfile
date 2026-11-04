@@ -6,17 +6,18 @@ lint:
 test-lint:
     {{ just_executable() }} --justfile lint/Justfile test
 
-# Reusable event-review admission and credential-boundary regressions.
-test-review:
-    node --test workflow/review.test.cjs
-
-# The wrappers' owner allowlist.
-test-admit:
-    node --test admit/*.test.mjs
-
-# secure-host's pin and signer checks.
+# secure-host's egress probe; lint/tests/secure_host_action.rs tests the action's steps.
 test-secure-host:
     node --test secure-host/*.test.mjs
+
+renovate := "renovate@44.198.3"
+
+# The runner preset and this repository's use of it (renovate/README.md):
+# Renovate's validator, then its offline dry run over the fixtures. npx
+# downloads Renovate, so CI does not run this.
+test-renovate:
+    npx --yes --package {{ renovate }} -- renovate-config-validator --strict --no-global renovate/runners.json .github/renovate.json
+    npx --yes --package {{ renovate }} -- node renovate/dry-run.mjs
 
 # The proxy, not an origin error or timeout, must refuse the write; and
 # with ALLOWED, a path of example.com an `egress-policy` rule allows, let

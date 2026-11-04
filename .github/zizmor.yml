@@ -4,9 +4,14 @@ rules:
   unpinned-uses:
     config:
       policies:
-        "jmarrero-forge/*": ref-pin
+        "cgwalters-forge/*": ref-pin
         "*": hash-pin
   # Suggests `$/` for every local action, ci.yml's included; we keep `./`
   # (./.agentic-job-source is another repository's checkout anyway).
   self-repository:
     disable: true
+  # The review wrapper pins our own actions at a commit, with `# main` for
+  # Renovate to follow, so every later merge here makes the comment "mismatch".
+  ref-version-mismatch:
+    ignore:
+      - cgwalters-review.yml

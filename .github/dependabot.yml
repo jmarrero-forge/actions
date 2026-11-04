@@ -1,7 +1,7 @@
 # Third-party actions are pinned by commit; this keeps those pins moving.
 # agentic-job is pinned by its release's commit with the tag as a comment,
-# which this moves too; our other own actions (jmarrero-forge/actions)
-# follow main and need no updates.
+# which this moves too. Renovate moves the review wrapper's own-action pins
+# from main (renovate.json); the dispatch wrapper still follows main.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -11,10 +11,13 @@ updates:
       interval: daily
     # policy, check and apply must name the same commit (the run refuses
     # calls at differing commits), so a new tag is one pull request for all
-    # three, in both jmarrero-agentic-job.yml and jmarrero-review.yml.
+    # three, in both cgwalters-agentic-job.yml and cgwalters-review.yml.
     groups:
       agentic-job:
         patterns: ["cgwalters-forge/agentic-job*"]
+    # These have no release tags; Renovate's git-refs manager tracks main.
+    ignore:
+      - dependency-name: "cgwalters-forge/actions*"
     # A release that turns out to be compromised is usually pulled within
     # days; checking daily but taking only week-old versions avoids pinning
     # one in the meantime. agentic-job is our own and was followed at main
