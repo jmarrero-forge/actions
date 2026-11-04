@@ -37,7 +37,7 @@ each with `:Z` for SELinux on RHEL 10 (untested there).
 
 `sudo` does not pass `SUDO_USER` into the container: the action names
 the runner's user with `sandbox.runner-user`
-([`config.mjs`](../config.mjs)).
+([`action.yml`](../action.yml), its step "Write the configuration").
 
 ## Supported hosts
 

@@ -1,7 +1,7 @@
 name: review
 on:
   # The base's reusable workflow runs; no step here checks out or runs the
-  # head (review.test.mjs enforces that), so this trigger is accepted.
+  # head (lint/tests/wrappers.rs enforces that), so this trigger is accepted.
   pull_request_target: # zizmor: ignore[dangerous-triggers]
     types: [opened, synchronize, reopened, ready_for_review]
   issue_comment:
@@ -9,21 +9,18 @@ on:
 permissions: {}
 jobs:
   review:
-    # Off until the repository variable AGENT_REVIEW names the reviewing
-    # agent: the wrapper has no fallback broker, and jmarrero's broker
-    # admits no review from this repository, so every review would fail.
     if: >-
-      vars.AGENT_REVIEW != '' && (github.event_name == 'pull_request_target' ||
-      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review')))
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review'))
     # Base-owned policy; the head is fetched only as data inside the sandbox.
     # A local reference resolves at the commit this file was read from: for
     # pull_request_target the base branch, for issue_comment the default
     # branch, never the pull request's head. So a pull request's edits to the
     # wrapper never review that pull request, and merged edits review the next
     # one, with no pin to move. The agentic-job tag it calls is checked
-    # against the agent job's in review.test.mjs, as is passing no secret.
-    uses: ./.github/workflows/jmarrero-review.yml
-    # Exactly the union of the wrapper's job grants (review.test.mjs).
+    # against the agent job's in lint/tests/wrappers.rs, as is passing no secret.
+    uses: ./.github/workflows/cgwalters-review.yml
+    # Exactly the union of the wrapper's job grants (lint/tests/wrappers.rs).
     permissions:
       contents: read
       issues: read

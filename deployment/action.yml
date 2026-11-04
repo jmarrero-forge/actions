@@ -1,0 +1,31 @@
+name: Deployment
+description: >-
+  Output this deployment's defaults from this action's deployment.json, for
+  the wrappers to use where neither an input nor a variable sets them.
+outputs:
+  agent-config-repo:
+    description: The public repository, OWNER/NAME, of opencode's configuration.
+    value: ${{ steps.read.outputs.agent-config-repo }}
+  agent-model:
+    description: The agent's model, as the inference proxy serves it.
+    value: ${{ steps.read.outputs.agent-model }}
+runs:
+  using: composite
+  steps:
+    - id: read
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        jq -ser '
+          if length != 1 or (.[0] | type) != "object" then error("deployment.json must be an object") else .[0] end |
+          {"agent-config-repo": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\\z",
+           "agent-model": "^[A-Za-z0-9_.:-]+(/[A-Za-z0-9_.:-]+)?\\z"} as $patterns |
+          (keys - ($patterns | keys)) as $unknown |
+          if ($unknown | length) > 0 then error("deployment.json: unknown setting \($unknown[0])") else . end |
+          reduce ($patterns | keys[]) as $key (.;
+            if has($key) | not then error("deployment.json: missing setting \($key)")
+            elif (.[$key] | type) != "string" then error("deployment.json: \($key) must match \($patterns[$key])")
+            elif (.[$key] | test($patterns[$key]) | not) then error("deployment.json: \($key) must match \($patterns[$key])")
+            else . end) | to_entries[] | "\(.key)=\(.value)"
+        ' "$ACTION_PATH/deployment.json" >> "$GITHUB_OUTPUT"

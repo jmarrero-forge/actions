@@ -34,12 +34,47 @@ inputs:
 runs:
   using: composite
   steps:
+    # Containerfile.pin is one FROM line, so that Dependabot's docker updater
+    # moves its tag and digest together. Only a digest is run: a tag alone
+    # would let whoever can push to the package choose what runs as root.
+    # signer.json names who must have built the image: the attestation's
+    # signer, checked against the digest before anything is pulled. jq
+    # prints each value JSON-encoded, so a newline in one cannot match.
     - name: Read the pin
       id: pin
       shell: bash
       env:
         ACTION: ${{ github.action_path }}
-      run: node "$ACTION/pin.mjs"
+      run: |
+        export LC_ALL=C
+        mapfile -t pins < <(grep -v '^[[:space:]]*$' "$ACTION/Containerfile.pin")
+        if [ "${#pins[@]}" != 1 ]; then
+          echo "::error::Containerfile.pin must hold exactly one FROM line"; exit 1
+        fi
+        from='^FROM ([a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+)(:[A-Za-z0-9_.-]{1,128})?@(sha256:[0-9a-f]{64})$'
+        if ! [[ "${pins[0]}" =~ $from ]]; then
+          echo "::error::Containerfile.pin is not FROM NAME[:TAG]@sha256:DIGEST: ${pins[0]}"; exit 1
+        fi
+        image="${BASH_REMATCH[1]}@${BASH_REMATCH[5]}"
+        declare -A pattern=(
+          [repository]='[A-Za-z0-9-]+/[A-Za-z0-9._-]+'
+          [workflow]='\.github/workflows/[A-Za-z0-9._-]+\.ya?ml'
+          [ref]='refs/(heads|tags)/[A-Za-z0-9._/-]+'
+        )
+        declare -A signer
+        for key in repository workflow ref; do
+          json=$(jq --arg key "$key" '.[$key]? | strings' "$ACTION/signer.json")
+          if ! [[ "$json" =~ ^\"(${pattern[$key]})\"$ ]]; then
+            echo "::error::signer.json: $key is missing or malformed"; exit 1
+          fi
+          signer[$key]=${BASH_REMATCH[1]}
+        done
+        {
+          echo "image=$image"
+          echo "repository=${signer[repository]}"
+          echo "cert-identity=https://github.com/${signer[repository]}/${signer[workflow]}@${signer[ref]}"
+          echo "source-ref=${signer[ref]}"
+        } >> "$GITHUB_OUTPUT"
     - name: Install podman where the runner lacks it
       shell: bash
       run: |
@@ -84,7 +119,11 @@ runs:
     # By the image's own `agentic-job config --host`, which checks the file
     # and adds the runner's user: sudo's SUDO_USER does not reach into the
     # container. Copied first so that no path of the caller's becomes a
-    # podman volume argument.
+    # podman volume argument. write-policy stops a later step POSTing to an
+    # arbitrary destination; reads and the runner's built-in write endpoints
+    # remain open, so it is not a data diode. Its policy file is read by
+    # setup on the host, not inside the configuration container, and an
+    # unreadable one fails here, before root runs anything.
     - name: Write the configuration
       shell: bash
       env:
@@ -93,7 +132,32 @@ runs:
         EGRESS: ${{ inputs.egress }}
         EGRESS_POLICY: ${{ inputs.egress-policy }}
         ID: ${{ steps.image.outputs.id }}
-      run: node "$ACTION/config.mjs"
+      run: |
+        mode=${EGRESS:-off}
+        if [ "$mode" != off ] && [ "$mode" != write-policy ]; then
+          echo "::error::egress must be off or write-policy"; exit 1
+        fi
+        if [ -n "$EGRESS_POLICY" ] && [ "$mode" != write-policy ]; then
+          echo "::error::egress-policy needs egress: write-policy"; exit 1
+        fi
+        dir=$RUNNER_TEMP/secure-host
+        mkdir -p "$dir/in"
+        cp -- "${CONFIG:-$ACTION/hosted.toml}" "$dir/in/config.toml"
+        settings=(--string "sandbox.runner-user=$(id -un)")
+        if [ "$mode" = write-policy ]; then
+          settings+=(--boolean egress.write-policy=true --boolean egress.proxy=true --boolean egress.rust-proxy=true)
+          if [ -n "$EGRESS_POLICY" ]; then
+            cp -- "$EGRESS_POLICY" "$dir/policy.toml"
+            settings+=(--string "egress.policy=$dir/policy.toml")
+          fi
+        else
+          settings+=(--boolean egress.write-policy=false)
+        fi
+        if ! err=$(sudo podman run --rm --network=none --entrypoint /agentic-job -v "$dir/in:/in:ro" "$ID" \
+          config --host --from /in/config.toml "${settings[@]}" 2>&1 > "$dir/config.out"); then
+          echo "::error::host configuration refused: $err"; exit 1
+        fi
+        mv "$dir/config.out" "$dir/config.toml"
     # The last thing in the job that has root. The image installs its binary
     # on the host and sets the host up through the host's `nsenter -t 1`; the
     # world-write policy and the rules outlive the container. No container
@@ -108,8 +172,12 @@ runs:
       shell: bash
       env:
         ACTION: ${{ github.action_path }}
-      # Copies only the CA variables of the image's root-owned runner.env.
-      run: node "$ACTION/runner-env.mjs"
+        PROXY_ENV: /etc/egress-proxy/runner.env
+      # Copies only the CA variables of the image's root-owned runner.env:
+      # trust stores, as paths under the proxy's root-owned directory.
+      # Anything else in the file is refused rather than passed on, so
+      # GITHUB_ENV gains no other variable, and nothing unless all passes.
+      run: bash "$ACTION/runner-env.sh"
     - name: Prove it
       if: ${{ inputs.check != 'false' }}
       shell: bash

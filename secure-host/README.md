@@ -25,7 +25,11 @@ this action runs nothing as another user.
 The unit of trust is the job. A job that runs code you don't trust holds
 nothing worth stealing. A separate job holds the secrets and runs none of
 the first job's code. It takes the first job's output by artifact ID and
-digest, and validates it as data, as agent safe outputs are handled.
+file SHA-256, and validates it as data, as agent safe outputs are handled.
+The concrete threat is build-produced code running beside a deployment
+secret. The consumer below follows the bounded shape in agentic-job's
+[Trusted artifact consumers](https://github.com/cgwalters-forge/agentic-job/blob/main/docs/workflows-check.md#trusted-artifact-consumers):
+one reviewed download, a fixed file check, then trusted data validation.
 
 ```yaml
 on: pull_request
@@ -36,27 +40,54 @@ jobs:
     permissions: {contents: read}
     outputs:
       id: ${{ steps.up.outputs.artifact-id }}
-      digest: ${{ steps.up.outputs.artifact-digest }}
+      digest: ${{ steps.hash.outputs.digest }}
     steps:
       - uses: actions/checkout@<sha>
         with: {persist-credentials: false}
       - uses: cgwalters-forge/actions/secure-host@<sha>  # runs as root: pin it
         with: {egress: write-policy}
-      - run: make test                       # as the runner's user: no root, writes only by rule
+      - run: make test artifact              # produces the single payload file, artifact; no root
+      - id: hash
+        run: |
+          digest=$(sha256sum artifact)
+          printf 'digest=%s\n' "${digest%% *}" >> "$GITHUB_OUTPUT"
       - id: up
         uses: actions/upload-artifact@<sha>
-        with: {name: out, path: out/}
-  publish:                                   # trusted: has the secret, runs nothing from build
+        with: {name: out, path: artifact}
+  publish:
     needs: build
     runs-on: ubuntu-26.04
     permissions: {contents: read, actions: read}
     environment: release
     steps:
-      - uses: actions/download-artifact@<sha>
-        with: {artifact-ids: "${{ needs.build.outputs.id }}"}
-      - run: verify-digest "${{ needs.build.outputs.digest }}" && validate out/
-        env: {TOKEN: "${{ secrets.DEPLOY }}"}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: {artifact-ids: '${{ needs.build.outputs.id }}'}
+      - shell: bash
+        env: {ARTIFACT_SHA256: '${{ needs.build.outputs.digest }}'}
+        run: |
+          shopt -s dotglob nullglob
+          entries=(*)
+          [[ ${#entries[@]} -eq 1 && ${entries[0]} == artifact && -f artifact && ! -L artifact ]]
+          [[ "$ARTIFACT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  artifact\n' "$ARTIFACT_SHA256" | sha256sum --check --strict -
+      - run: validate artifact
+        env: {TOKEN: '${{ secrets.DEPLOY }}'}
 ```
+
+The build uploads exactly one file named `artifact`. Its `sha256sum` is
+the digest of that file; upload-artifact's `artifact-digest` hashes the
+ZIP archive, not the extracted file, and cannot be used for this check.
+The check requires exactly one regular, non-symlink workspace entry,
+including hidden entries, so unchecked producer files cannot sit beside
+the payload. A producer's digest binds its output, not an independent
+approval. `validate` stands for a trusted data validator available on the
+fresh consumer runner without checkout or another action. It must treat
+`artifact` as data, never execute it; only its step receives the secret.
+
+The standalone secure-host step opts into `egress: write-policy` to
+restrict HTTP writes to allowed destinations; it is off by default and
+is not complete exfiltration prevention. Leave `config` and
+`egress-policy` unset for the checker-admitted shape.
 
 The job that runs secure-host has no `id-token` permission and no
 secrets, checks out with `persist-credentials: false`, and uses no Docker
@@ -73,9 +104,18 @@ process's environment through `/proc/PID/environ`.
 each other, or from that job's own tokens. GitHub's step model gives
 those to every step.
 
-[The CI workflow](../.github/workflows/secure-host.yml) runs this example,
+[The CI workflow](../.github/workflows/secure-host.yml) tests host hardening,
 the inputs, and the world-write policy against the pinned image on
 `ubuntu-26.04`, with a positive control before the action for each claim.
+[example-plain-ci](../.github/workflows/example-plain-ci.yml) is an executable
+caller example, with the action named by commit and the checks as `just`
+recipes. It uses the standalone action with `egress: write-policy` and
+exercises the file-digest consumer with a commit ID as data, without
+secrets or a release environment. That executable example is covered
+separately by [#169](https://github.com/cgwalters-forge/actions/issues/169)
+and [PR #171](https://github.com/cgwalters-forge/actions/pull/171).
+secure-host.yml still uses a ZIP-digest handoff, not the file-digest
+consumer above, and does not prove this new example.
 
 ## Caveats of running everything as the runner's user
 
@@ -87,7 +127,7 @@ Any step can compromise the steps after it. The job is the unit of trust.
    JavaScript action, and an earlier step can steer such an action. Run
    untrusted code only on triggers that can't write default-branch caches,
    don't restore in a trusted job a cache the untrusted job could have
-   written, and pass artifacts by ID and digest, as data.
+   written, and pass artifacts by ID and file SHA-256, as data.
 2. **The OIDC request token** under `id-token: write` mints tokens for any
    audience: the untrusted job never has `id-token`.
 3. **checkout's persisted credentials and `GITHUB_TOKEN`** are readable by
@@ -143,7 +183,7 @@ creating the user is planned
 Exactly **Ubuntu 26.04** and **RHEL 10**, by `ID` and `VERSION_ID` of
 `/etc/os-release`; the image refuses any other host before it changes
 anything. Only GitHub's hosted `ubuntu-26.04` is tested here. The action
-needs `node`, `gh` and podman, and installs podman with apt where it is
+needs `jq`, `gh` and podman, and installs podman with apt where it is
 missing. A load, setup or probe failure fails the step and can leave the
 host partly changed: the job must not continue with untrusted code, and
 reuse of that host is unsupported ([setup](docs/setup.md#supported-hosts)).

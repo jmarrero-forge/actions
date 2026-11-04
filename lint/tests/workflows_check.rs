@@ -104,6 +104,232 @@ fn passing() {
     assert!(out.contains("ci.yml\nworkflows.yml\n"), "{out}");
 }
 
+/// secure-host's plain-CI example, as a repository's pull request that adds
+/// it with no exemption: the rules here admit it, and it reaches the shape
+/// check unexempted. The stand-in judges nothing of its jobs; the shape
+/// check lint/shape-check.yml names does.
+#[test]
+fn plain_ci_example() {
+    let example = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../.github/workflows/example-plain-ci.yml"
+    ))
+    .unwrap();
+    let (code, out) = pull_request(
+        "plain-ci",
+        &[(".github/workflows/example-plain-ci.yml", Some(&example))],
+    );
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("example-plain-ci.yml\n"), "{out}");
+    assert!(out.contains("exemptions: \n"), "{out}");
+    let exemptions = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../.github/agentic-job/workflows.toml"
+    ))
+    .unwrap();
+    assert!(!exemptions.contains("example-plain-ci"));
+}
+
+fn plain_ci() -> yaml_rust2::Yaml {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../.github/workflows/example-plain-ci.yml"
+    ))
+    .unwrap();
+    yaml_rust2::YamlLoader::load_from_str(&text)
+        .unwrap()
+        .remove(0)
+}
+
+#[test]
+fn plain_ci_produces_one_file_and_exports_its_digest() {
+    let workflow = plain_ci();
+    let build = &workflow["jobs"]["build"];
+    let steps = build["steps"].as_vec().unwrap();
+    let hardening = steps
+        .iter()
+        .find(|s| s["with"]["egress"].as_str().is_some())
+        .unwrap();
+    assert!(
+        hardening["uses"]
+            .as_str()
+            .unwrap()
+            .starts_with("cgwalters-forge/actions/secure-host@")
+    );
+    assert_eq!(hardening["with"].as_hash().unwrap().len(), 1);
+    assert_eq!(hardening["with"]["egress"].as_str(), Some("write-policy"));
+    let payload = steps
+        .iter()
+        .find(|s| s["id"].as_str() == Some("payload"))
+        .unwrap();
+    assert_eq!(
+        build["outputs"]["digest"].as_str(),
+        Some("${{ steps.payload.outputs.digest }}")
+    );
+    assert_eq!(
+        build["outputs"]["id"].as_str(),
+        Some("${{ steps.up.outputs.artifact-id }}")
+    );
+    let upload = steps
+        .iter()
+        .find(|s| s["id"].as_str() == Some("up"))
+        .unwrap();
+    assert_eq!(upload["with"]["path"].as_str(), Some("artifact"));
+    let repo = Repo::new("plain-payload");
+    let commit = repo.commit(&[]);
+    let output = repo.0.parent().unwrap().join("output");
+    let out = Command::new("bash")
+        .args([
+            "--noprofile",
+            "--norc",
+            "-e",
+            "-o",
+            "pipefail",
+            "-c",
+            payload["run"].as_str().unwrap(),
+        ])
+        .current_dir(&repo.0)
+        .env("GITHUB_OUTPUT", &output)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("artifact")).unwrap(),
+        format!("{commit}\n")
+    );
+    let hash = Command::new("sha256sum")
+        .arg(repo.0.join("artifact"))
+        .output()
+        .unwrap();
+    let hash = String::from_utf8(hash.stdout).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(output).unwrap(),
+        format!("digest={}\n", hash.split_whitespace().next().unwrap())
+    );
+}
+
+/// Run the consumer scripts straight from the workflow, without a checkout
+/// or producer code. Only these data-only scripts run; never host setup.
+#[test]
+fn plain_ci_consumer_rejects_bad_layout_digests_and_commit_data() {
+    let workflow = plain_ci();
+    let publish = &workflow["jobs"]["publish"];
+    assert!(publish["environment"].is_badvalue());
+    assert!(publish["env"].is_badvalue());
+    let steps = publish["steps"].as_vec().unwrap();
+    assert_eq!(steps.len(), 3);
+    assert_eq!(
+        steps[0]["uses"].as_str(),
+        Some("actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333")
+    );
+    assert_eq!(steps[0]["with"].as_hash().unwrap().len(), 1);
+    assert_eq!(steps[1]["shell"].as_str(), Some("bash"));
+    assert_eq!(steps[2]["shell"].as_str(), Some("node {0}"));
+    let valid = format!("{}\n", "0123456789abcdef".repeat(2) + "01234567").into_bytes();
+    for case in [
+        "valid",
+        "missing",
+        "extra",
+        "hidden",
+        "directory",
+        "symlink",
+        "malformed-digest",
+        "digest-injection",
+        "wrong-digest",
+        "short",
+        "uppercase",
+        "no-newline",
+        "two-lines",
+        "code",
+        "high-bit",
+        "oversized",
+    ] {
+        let repo = Repo::new(&format!("plain-consumer-{case}"));
+        let dir = repo.0.parent().unwrap().join("workspace");
+        std::fs::create_dir(&dir).unwrap();
+        let mut data = valid.clone();
+        match case {
+            "short" => data = b"abc\n".to_vec(),
+            "uppercase" => data = valid.to_ascii_uppercase(),
+            "no-newline" => {
+                data.pop();
+            }
+            "two-lines" => data.extend_from_slice(&valid),
+            "code" => data = b"require('node:fs').writeFileSync('executed', '')\n".to_vec(),
+            "high-bit" => data[0] |= 0x80,
+            "oversized" => data = vec![b'a'; 1024 * 1024],
+            _ => {}
+        }
+        std::fs::write(dir.join("artifact"), &data).unwrap();
+        let hash = Command::new("sha256sum")
+            .arg(dir.join("artifact"))
+            .output()
+            .unwrap();
+        assert!(hash.status.success());
+        let hash = String::from_utf8(hash.stdout).unwrap();
+        let mut digest = hash.split_whitespace().next().unwrap().to_owned();
+        match case {
+            "missing" => std::fs::remove_file(dir.join("artifact")).unwrap(),
+            "extra" | "hidden" => std::fs::write(
+                dir.join(if case == "hidden" { ".extra" } else { "extra" }),
+                "unchecked",
+            )
+            .unwrap(),
+            "directory" => {
+                std::fs::remove_file(dir.join("artifact")).unwrap();
+                std::fs::create_dir(dir.join("artifact")).unwrap();
+            }
+            "symlink" => {
+                std::fs::rename(dir.join("artifact"), repo.0.join("target")).unwrap();
+                std::os::unix::fs::symlink(repo.0.join("target"), dir.join("artifact")).unwrap();
+            }
+            "malformed-digest" => digest = "a".repeat(63),
+            "digest-injection" => digest += "\nmalicious checksum entry",
+            "wrong-digest" => digest = "0".repeat(64),
+            _ => {}
+        }
+        let check = Command::new("bash")
+            .args([
+                "--noprofile",
+                "--norc",
+                "-e",
+                "-o",
+                "pipefail",
+                "-c",
+                steps[1]["run"].as_str().unwrap(),
+            ])
+            .current_dir(&dir)
+            .env("ARTIFACT_SHA256", digest)
+            .output()
+            .unwrap();
+        let layout_ok = matches!(
+            case,
+            "valid"
+                | "short"
+                | "uppercase"
+                | "no-newline"
+                | "two-lines"
+                | "code"
+                | "high-bit"
+                | "oversized"
+        );
+        assert_eq!(check.status.success(), layout_ok, "{case}: {check:?}");
+        if layout_ok {
+            let validate = Command::new("node")
+                .args(["-e", steps[2]["run"].as_str().unwrap()])
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert_eq!(
+                validate.status.success(),
+                case == "valid",
+                "{case}: {validate:?}"
+            );
+        }
+        assert!(!dir.join("executed").exists());
+    }
+}
+
 #[test]
 fn forbidden_trigger() {
     let (code, out) = pull_request("trigger", &[(CI, Some("trigger.yml"))]);

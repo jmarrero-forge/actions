@@ -1,0 +1,93 @@
+# secure-host's contract (secure-host/README.md) as plain CI, with no
+# agent: a build job that runs the tests and holds nothing worth stealing,
+# and a publish job that runs nothing of the build job's and takes its
+# output by artifact ID and file digest, as data, without a checkout.
+#
+# It names secure-host by a commit, as a caller outside this repository
+# would, so it shows a released revision working, not this one: that is
+# secure-host.yml's job. Move this pin by hand after reviewing the action
+# and its image pin (Dependabot does not follow our own actions).
+#
+# The consumer follows agentic-job v0.6.5's trusted-consumer contract.
+# Neither job holds secrets or a release environment on PRs or pushes.
+name: example-plain-ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      id: ${{ steps.up.outputs.artifact-id }}
+      digest: ${{ steps.payload.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Stop build steps sending HTTP writes to arbitrary destinations;
+      # reads and runner endpoints remain open. Egress is off by default.
+      - uses: cgwalters-forge/actions/secure-host@c9a9501729bc306f3efdc188056b51149c1c9398 # main on 2026-11-02
+        with:
+          egress: write-policy
+      # The runner's user from here on: no root and no metadata service.
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: just@1.58.0
+      - run: just test-secure-host
+      - id: payload
+        run: |
+          git rev-parse HEAD > artifact
+          digest=$(sha256sum artifact)
+          echo "digest=${digest%% *}" >> "$GITHUB_OUTPUT"
+      - id: up
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: out
+          path: artifact
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.id }}
+      # Producer files must not become code or sit beside the checked data.
+      # Exact first script from v0.6.5 docs/workflows-check.md; hashes the
+      # extracted file, not upload-artifact's ZIP digest.
+      - shell: bash
+        env:
+          ARTIFACT_SHA256: ${{ needs.build.outputs.digest }}
+        run: |
+          shopt -s dotglob nullglob
+          entries=(*)
+          [[ ${#entries[@]} -eq 1 && ${entries[0]} == artifact && -f artifact && ! -L artifact ]]
+          [[ "$ARTIFACT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  artifact\n' "$ARTIFACT_SHA256" | sha256sum --check --strict -
+      - name: Validate the commit ID as data, never execute it
+        shell: node {0}
+        run: |
+          const fs = require('node:fs');
+          if (fs.statSync('artifact').size !== 41) throw new Error('Expected one commit ID line');
+          const data = fs.readFileSync('artifact');
+          if (data.length !== 41 || !/^[0-9a-f]{40}\n$/.test(data.toString('utf8'))) {
+            throw new Error('Expected one commit ID line');
+          }
+          console.log(`Validated commit ${data.toString('utf8').trimEnd()}`);

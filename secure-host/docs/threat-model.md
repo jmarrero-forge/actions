@@ -88,7 +88,12 @@ source, read for agentic-job#501):
 
 So a job that runs code it does not trust holds no `id-token`
 permission and no secrets, and treats its own artifacts and cache
-writes as that code's output, which a separate job validates as data.
+writes as that code's output. A separate job takes one file named
+`artifact` by artifact ID and file SHA-256 (not the upload ZIP's digest),
+checks it with the fixed [contract](../README.md#the-contract) script,
+and validates it as data. Its trusted validator is available without
+checkout or another action; only that validation step receives the secret.
+The producer's digest is not an independent approval of its content.
 Step-to-step tampering is out of scope: any step can compromise the
 steps after it, and that cannot be fixed inside one job.
 

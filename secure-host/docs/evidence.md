@@ -20,9 +20,9 @@ run with `before`, and the same check after it with `after`:
 | --- | --- | --- |
 | no sudo, no docker | `just secure-host-root` | `build` |
 | no metadata service, while `github.com` answers | `just secure-host-metadata` | `build` |
-| no read of an earlier step's process environment, which stays alive | [`reads-probe.mjs`](../reads-probe.mjs) | `build` |
+| no read of an earlier step's process environment, which stays alive | two steps of [`secure-host.yml`](../../.github/workflows/secure-host.yml) | `build` |
 | a POST refused by the proxy, a GET through | `just secure-host-egress` | `build` |
-| the artifact handed over by ID and digest, validated as data | `publish` | `publish` |
+| the artifact handed over by ID with a ZIP-digest comparison and data validation | `publish` | `publish` |
 | a caller's `config` is taken whole (one that keeps sudo) | `just secure-host-options` | `options` |
 | an `egress-policy` file replaces the image's rules | `just secure-host-egress /secure-host-ci` | `egress-policy` |
 | an invalid policy fails setup | `just secure-host-invalid-policy` | `invalid-egress-policy` |
@@ -30,6 +30,20 @@ run with `before`, and the same check after it with `after`:
 
 Each also passes `sandbox check` inside the action, but for `options`
 and `invalid-egress-policy`, which turn it off.
+
+The `publish` job in secure-host.yml compares upload-artifact's ZIP
+digest, not the extracted file's SHA-256. It does not prove the
+[README contract's](../README.md#the-contract) fixed
+single-file consumer from agentic-job's
+[Trusted artifact consumers](https://github.com/cgwalters-forge/agentic-job/blob/main/docs/workflows-check.md#trusted-artifact-consumers).
+That contract passes one file named `artifact` by ID and file SHA-256
+to a trusted data validator available without checkout or another action.
+The [executable caller example](../../.github/workflows/example-plain-ci.yml)
+uses standalone secure-host with `egress: write-policy` and exercises
+that file-digest check and data validation with a commit ID, without
+secrets or a release environment. That separate work is covered by
+[#169](https://github.com/cgwalters-forge/actions/issues/169) and
+[PR #171](https://github.com/cgwalters-forge/actions/pull/171).
 
 ## Run-time controls through the action on hosted Ubuntu 26.04
 

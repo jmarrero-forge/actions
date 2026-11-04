@@ -1,0 +1,22 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "GitHub-hosted Ubuntu runner labels in runs-on, and nothing else (renovate/README.md)",
+  "packageRules": [
+    {
+      "description": "Everything else stays with the repository's Dependabot, so no second pull request for an action pin or image",
+      "matchPackageNames": ["*"],
+      "enabled": false
+    },
+    {
+      "description": "ubuntu-24.04 to ubuntu-26.04, ubuntu-24.04-arm to ubuntu-26.04-arm; ubuntu-slim, ubuntu-latest and self-hosted labels are not GitHub runner versions and are not touched",
+      "matchDatasources": ["github-runners"],
+      "matchPackageNames": ["ubuntu"],
+      "enabled": true,
+      "groupName": "Ubuntu runner labels",
+      "automerge": false
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": false
+  }
+}

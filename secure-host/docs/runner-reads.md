@@ -72,10 +72,12 @@ default in the image and in this action's `hosted.toml`;
 
 ## Proof
 
-This repository's `build` job runs
-[`reads-probe.mjs`](../reads-probe.mjs): before the action it starts a
-detached `sleep` with a canary in its environment and reads it, after
-the action it must fail to, with the process alive by a signal check
+This repository's `build` job
+([`secure-host.yml`](../../.github/workflows/secure-host.yml)) has a step
+on each side of the action: before it, one starts a detached `sleep`
+with a canary in its environment and reads it; after it, the other must
+fail to, with permission denied or no such file and nothing else, and
+with the process alive by a signal check
 before and after. The job must still end green with the process left
 running. agentic-job's `confined` job also checks, from the job's log,
 that the runner's own cleanup ended that process
