@@ -25,8 +25,8 @@ jobs:
     outputs:
       agent-model: ${{ steps.deployment.outputs.agent-model }}
     steps:
-      - uses: cgwalters-forge/actions/admit@c9a9501729bc306f3efdc188056b51149c1c9398 # main
-      - uses: cgwalters-forge/actions/deployment@c9a9501729bc306f3efdc188056b51149c1c9398 # main
+      - uses: jmarrero-forge/actions/admit@53851523b81dd50cc4398d4d34009076a18f828c # main
+      - uses: jmarrero-forge/actions/deployment@53851523b81dd50cc4398d4d34009076a18f828c # main
         id: deployment
 
   policy:
@@ -166,7 +166,7 @@ jobs:
       # must not change privileged code behind a caller's reviewed wrapper
       # pin. Renovate proposes updates to these commits (renovate.json).
       - name: Join the tailnet
-        uses: cgwalters-forge/actions/tailscale@c9a9501729bc306f3efdc188056b51149c1c9398 # main
+        uses: jmarrero-forge/actions/tailscale@53851523b81dd50cc4398d4d34009076a18f828c # main
         with:
           hostname: agentic-job-${{ github.run_id }}-${{ github.run_attempt }}
           # As in cgwalters-agentic-job.yml: unset, tailnets.json's entry.

@@ -92,7 +92,7 @@ fn main_pin(r: &str) -> bool {
 
 /// Each (action, ref) of TEXT's calls of this repository's actions.
 fn own_action_refs(text: &str) -> Vec<(&str, &str)> {
-    text.match_indices("uses: cgwalters-forge/actions/")
+    text.match_indices("uses: jmarrero-forge/actions/")
         .filter_map(|(i, prefix)| {
             let rest = &text[i + prefix.len()..];
             let token = &rest[..rest.find(char::is_whitespace).unwrap_or(rest.len())];
@@ -205,7 +205,7 @@ fn admits_first(text: &str, gate: &str) {
     );
     assert!(
         first_steps(body).iter().any(|step| step
-            .strip_prefix("- uses: cgwalters-forge/actions/admit@")
+            .strip_prefix("- uses: jmarrero-forge/actions/admit@")
             .is_some_and(|r| r == "main" || main_pin(r))),
         "{gate} begins with the admit action"
     );
@@ -652,8 +652,17 @@ fn review_task_treats_the_head_as_hostile_and_defers_to_the_merge_policy() {
 #[test]
 fn agentic_job_is_called_at_one_release_our_own_actions_at_main() {
     let workflow = read(AGENTIC_JOB);
-    let refs: Vec<_> = captures(&workflow, "uses: cgwalters-forge/")
+    // Our own actions are this copy's, agentic-job stays upstream's.
+    let refs: Vec<_> = captures(&workflow, "uses: ")
         .into_iter()
+        .filter_map(|rest| {
+            rest.strip_prefix("jmarrero-forge/")
+                .filter(|r| r.starts_with("actions/"))
+                .or_else(|| {
+                    rest.strip_prefix("cgwalters-forge/")
+                        .filter(|r| r.starts_with("agentic-job/"))
+                })
+        })
         .filter_map(|rest| {
             let (token, comment) = rest
                 .split_once(' ')
@@ -735,7 +744,7 @@ fn configuration_repository_defaults_to_deployment_json_after_the_input_and_the_
         "AGENT_CONFIG_REPO: ${{ inputs.agent-config-repo || vars.AGENT_CONFIG_REPO || steps.deployment.outputs.agent-config-repo }}"
     )));
     assert!(job(&workflow, "target").contains(
-        "\n      - uses: cgwalters-forge/actions/deployment@main\n        id: deployment\n"
+        "\n      - uses: jmarrero-forge/actions/deployment@main\n        id: deployment\n"
     ));
     let action = read("deployment/action.yml");
     assert!(line_then(
@@ -767,7 +776,7 @@ fn model_defaults_to_deployment_json_after_the_input_and_the_variable() {
         6,
         "agent-model: ${{ steps.deployment.outputs.agent-model }}"
     )));
-    let deployment = "\n      - uses: cgwalters-forge/actions/deployment@";
+    let deployment = "\n      - uses: jmarrero-forge/actions/deployment@";
     assert!(admit.match_indices(deployment).any(|(i, _)| {
         admit[i + deployment.len()..]
             .split_once('\n')

@@ -36,7 +36,7 @@ test('Renovate tracks all three review pins from main, without automerge or disp
   assert.equal(manager.customType, 'regex');
   assert.deepEqual(manager.managerFilePatterns, ['/^\\.github/workflows/cgwalters-review\\.yml$/']);
   assert.equal(manager.datasourceTemplate, 'git-refs');
-  assert.equal(manager.packageNameTemplate, 'https://github.com/cgwalters-forge/actions');
+  assert.equal(manager.packageNameTemplate, 'https://github.com/jmarrero-forge/actions');
   assert.equal(manager.currentValueTemplate, 'main');
   const pattern = new RegExp(manager.matchStrings[0], 'g');
   const wrapper = read('./cgwalters-review.yml');

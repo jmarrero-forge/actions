@@ -5,10 +5,10 @@
     {
       "customType": "regex",
       "managerFilePatterns": ["/^\\.github/workflows/cgwalters-review\\.yml$/"],
-      "matchStrings": ["uses: cgwalters-forge/actions/(?:admit|deployment|tailscale)@(?<currentDigest>[0-9a-f]{40}) # main"],
+      "matchStrings": ["uses: jmarrero-forge/actions/(?:admit|deployment|tailscale)@(?<currentDigest>[0-9a-f]{40}) # main"],
       "currentValueTemplate": "main",
       "depNameTemplate": "review-actions",
-      "packageNameTemplate": "https://github.com/cgwalters-forge/actions",
+      "packageNameTemplate": "https://github.com/jmarrero-forge/actions",
       "datasourceTemplate": "git-refs"
     }
   ],
@@ -17,7 +17,7 @@
       "description": "Update the review wrapper's own-action commits together through review, even without release tags",
       "matchManagers": ["custom.regex"],
       "matchDatasources": ["git-refs"],
-      "matchPackageNames": ["https://github.com/cgwalters-forge/actions"],
+      "matchPackageNames": ["https://github.com/jmarrero-forge/actions"],
       "enabled": true,
       "groupName": "review actions",
       "automerge": false

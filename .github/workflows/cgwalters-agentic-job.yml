@@ -182,12 +182,12 @@ jobs:
       # could mint identity tokens with this file's `job_workflow_ref` for
       # any audience: refuse an owner not ours here, on a hosted runner,
       # before that job is scheduled.
-      - uses: cgwalters-forge/actions/admit@main
+      - uses: jmarrero-forge/actions/admit@main
       # The model and configuration repository defaults below, from
       # deployment/deployment.json, so that a second deployment's copy sets
       # them there rather than in this file (its copy repoints these
       # `uses:` lines at itself too, which GitHub requires be literal).
-      - uses: cgwalters-forge/actions/deployment@main
+      - uses: jmarrero-forge/actions/deployment@main
         id: deployment
       # Trusted pinned code only; no target checkout and no write token.
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -522,7 +522,7 @@ jobs:
       # session's hostname is the target job's, which its endpoint names.
       - name: Join the tailnet
         if: ${{ needs.target.outputs.agent != 'fake' || needs.target.outputs.session == 'true' }}
-        uses: cgwalters-forge/actions/tailscale@main
+        uses: jmarrero-forge/actions/tailscale@main
         with:
           hostname: ${{ needs.target.outputs.session-host || format('agentic-job-{0}-{1}', github.run_id, github.run_attempt) }}
           # The calling repository's tailnet login, for an organization

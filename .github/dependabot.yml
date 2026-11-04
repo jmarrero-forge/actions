@@ -17,7 +17,7 @@ updates:
         patterns: ["cgwalters-forge/agentic-job*"]
     # These have no release tags; Renovate's git-refs manager tracks main.
     ignore:
-      - dependency-name: "cgwalters-forge/actions*"
+      - dependency-name: "jmarrero-forge/actions*"
     # A release that turns out to be compromised is usually pulled within
     # days; checking daily but taking only week-old versions avoids pinning
     # one in the meantime. agentic-job is our own and was followed at main
