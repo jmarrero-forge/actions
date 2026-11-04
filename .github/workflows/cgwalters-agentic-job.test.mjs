@@ -6,15 +6,18 @@ import { test } from 'node:test';
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
 const workflow = readFileSync(new URL('./cgwalters-agentic-job.yml', import.meta.url), 'utf8');
 
-// A repository without INFERENCE_URL falls back to the broker its runner
-// joins the tailnet to reach: the wrappers and tailnets.json move together.
-test('the wrappers fall back to the cgwalters-forge tailnet broker', () => {
+// jmarrero-forge's broker is on a private tailnet address, which this public
+// repository never writes: the broker is the calling repository's
+// INFERENCE_URL, and the wrappers default only its audience.
+test('the wrappers take the jmarrero-forge broker from INFERENCE_URL alone', () => {
   const tailnets = JSON.parse(readFileSync(new URL('../../tailscale/tailnets.json', import.meta.url), 'utf8'));
-  const broker = tailnets['cgwalters-forge'].proxy;
+  assert.equal(tailnets['jmarrero-forge'].proxy, '');
   const review = readFileSync(new URL('./cgwalters-review.yml', import.meta.url), 'utf8');
-  const fallbacks = [...review.matchAll(/vars\.INFERENCE_URL \|\| '([^']*)'/g)].map(match => match[1]);
-  assert.deepEqual(fallbacks, [broker]);
-  assert.deepEqual([...workflow.matchAll(/\n {10}BROKER_URL: (\S+)\n/g)].map(match => match[1]), [broker]);
+  assert.deepEqual([...review.matchAll(/\n {6}inference-url: ([^\n]*)\n/g)].map(match => match[1]), ['${{ vars.INFERENCE_URL }}']);
+  assert.deepEqual([...review.matchAll(/\n {6}inference-audience: ([^\n]*)\n/g)].map(match => match[1]), ["${{ vars.INFERENCE_AUDIENCE || 'jmarrero-praxis-broker' }}"]);
+  assert.deepEqual([...workflow.matchAll(/\n {10}BROKER_URL: ([^\n]*)\n/g)].map(match => match[1]), ['${{ vars.INFERENCE_URL }}']);
+  assert.deepEqual([...workflow.matchAll(/\n {10}BROKER_AUDIENCE: ([^\n]*)\n/g)].map(match => match[1]), ['jmarrero-praxis-broker']);
+  for (const text of [workflow, review]) assert.doesNotMatch(text, /https?:\/\/\d/);
 });
 
 // The review wrapper has no inputs and its caller passes no secret, so it

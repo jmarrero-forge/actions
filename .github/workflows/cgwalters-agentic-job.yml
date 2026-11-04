@@ -82,7 +82,7 @@ on:
         default: ""
       # Deployment settings, for a caller that must differ; see the header.
       agent:
-        description: "opencode, claude or vibe; empty: the variable AGENT, else opencode. fake is unsupported with the sandbox user"
+        description: "opencode, claude or vibe; empty: the variable AGENT, else claude. fake is unsupported with the sandbox user"
         type: string
         default: ""
       model:
@@ -208,14 +208,14 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           # The deployment's defaults: the one place they are written, but
           # for AGENT_MODEL's and AGENT_CONFIG_REPO's, which deployment.json holds.
-          AGENT: ${{ inputs.agent || vars.AGENT || 'opencode' }}
+          AGENT: ${{ inputs.agent || vars.AGENT || 'claude' }}
           AGENT_MODEL: ${{ inputs.model || vars.AGENT_MODEL || steps.deployment.outputs.agent-model }}
           AGENT_RUNNER: ${{ inputs.runner || vars.AGENT_RUNNER || '"ubuntu-26.04"' }}
           # The broker's URL and audience default together, in the script.
           INFERENCE_URL: ${{ inputs.inference-url || vars.INFERENCE_URL }}
           INFERENCE_AUDIENCE: ${{ inputs.inference-audience || vars.INFERENCE_AUDIENCE }}
-          BROKER_URL: http://100.114.231.4:18080
-          BROKER_AUDIENCE: praxis-credential-broker
+          BROKER_URL: ${{ vars.INFERENCE_URL }}
+          BROKER_AUDIENCE: jmarrero-praxis-broker
           INFERENCE_REGISTER: ${{ inputs.inference-register }}
           AGENT_CONFIG_REPO: ${{ inputs.agent-config-repo || vars.AGENT_CONFIG_REPO || steps.deployment.outputs.agent-config-repo }}
           AGENT_CONFIG_PATH: ${{ inputs.agent-config-path || vars.AGENT_CONFIG_PATH || 'opencode' }}

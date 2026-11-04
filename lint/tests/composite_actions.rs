@@ -149,7 +149,7 @@ fn deployment_defaults_and_outputs() {
     for (text, expected) in [
         (
             ours.as_str(),
-            "agent-config-repo=cgwalters-forge/agenthome\nagent-model=praxis/gpt-6.1-sol\n",
+            "agent-config-repo=jmarrero-forge/agenthome\nagent-model=claude-opus-5-5\n",
         ),
         (
             r#"{"agent-config-repo":"example/home","agent-model":"devstral-small-latest"}"#,

@@ -28,7 +28,7 @@ jobs:
     with:
       id: wrapper-smoke
       runner: '"ubuntu-26.04"'
-      repo: cgwalters-forge/actions
+      repo: jmarrero-forge/actions
       allow: workflow/review.toml
       kind: analysis
       outputs: noop

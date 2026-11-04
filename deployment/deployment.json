@@ -1,4 +1,4 @@
 {
-  "agent-config-repo": "cgwalters-forge/agenthome",
-  "agent-model": "praxis/gpt-6.1-sol"
+  "agent-config-repo": "jmarrero-forge/agenthome",
+  "agent-model": "claude-opus-5-5"
 }
