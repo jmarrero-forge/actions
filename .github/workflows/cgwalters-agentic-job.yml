@@ -182,12 +182,17 @@ jobs:
       # could mint identity tokens with this file's `job_workflow_ref` for
       # any audience: refuse an owner not ours here, on a hosted runner,
       # before that job is scheduled.
-      - uses: jmarrero-forge/actions/admit@main
+      # Unlike upstream's, this wrapper pins our own actions by commit, as
+      # the review wrapper does: jmarrero's broker admits this file at the
+      # commit its caller pins, and main must not change what an admitted
+      # job runs (the tailnet join as root, with the identity token at hand)
+      # behind that admission.
+      - uses: jmarrero-forge/actions/admit@53851523b81dd50cc4398d4d34009076a18f828c # main
       # The model and configuration repository defaults below, from
       # deployment/deployment.json, so that a second deployment's copy sets
       # them there rather than in this file (its copy repoints these
       # `uses:` lines at itself too, which GitHub requires be literal).
-      - uses: jmarrero-forge/actions/deployment@main
+      - uses: jmarrero-forge/actions/deployment@53851523b81dd50cc4398d4d34009076a18f828c # main
         id: deployment
       # Trusted pinned code only; no target checkout and no write token.
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -514,7 +519,7 @@ jobs:
         run: |
           chmod 0600 /var/tmp/agentic-job/*
           chmod 0755 /var/tmp/agentic-job/agentic-job
-      # Our one privileged step, this repository's own action at main, before anything of the agent's is on the
+      # Our one privileged step, this repository's own action at a commit of main, before anything of the agent's is on the
       # machine. The action picks the client id and tags by organization,
       # joins with --accept-dns=false and makes tailscaled's socket root's
       # only. For a real agent, and for a session, which the operator
@@ -522,7 +527,7 @@ jobs:
       # session's hostname is the target job's, which its endpoint names.
       - name: Join the tailnet
         if: ${{ needs.target.outputs.agent != 'fake' || needs.target.outputs.session == 'true' }}
-        uses: jmarrero-forge/actions/tailscale@main
+        uses: jmarrero-forge/actions/tailscale@53851523b81dd50cc4398d4d34009076a18f828c # main
         with:
           hostname: ${{ needs.target.outputs.session-host || format('agentic-job-{0}-{1}', github.run_id, github.run_attempt) }}
           # The calling repository's tailnet login, for an organization

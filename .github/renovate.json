@@ -4,7 +4,7 @@
   "customManagers": [
     {
       "customType": "regex",
-      "managerFilePatterns": ["/^\\.github/workflows/cgwalters-review\\.yml$/"],
+      "managerFilePatterns": ["/^\\.github/workflows/cgwalters-(agentic-job|review)\\.yml$/"],
       "matchStrings": ["uses: jmarrero-forge/actions/(?:admit|deployment|tailscale)@(?<currentDigest>[0-9a-f]{40}) # main"],
       "currentValueTemplate": "main",
       "depNameTemplate": "review-actions",
@@ -14,7 +14,7 @@
   ],
   "packageRules": [
     {
-      "description": "Update the review wrapper's own-action commits together through review, even without release tags",
+      "description": "Update the wrappers' own-action commits together through review, even without release tags",
       "matchManagers": ["custom.regex"],
       "matchDatasources": ["git-refs"],
       "matchPackageNames": ["https://github.com/jmarrero-forge/actions"],

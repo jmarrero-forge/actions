@@ -1,7 +1,7 @@
 # Third-party actions are pinned by commit; this keeps those pins moving.
 # agentic-job is pinned by its release's commit with the tag as a comment,
-# which this moves too. Renovate moves the review wrapper's own-action pins
-# from main (renovate.json); the dispatch wrapper still follows main.
+# which this moves too. Renovate moves the wrappers' own-action pins from
+# main (renovate.json).
 version: 2
 updates:
   - package-ecosystem: github-actions

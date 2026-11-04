@@ -29,26 +29,27 @@ test('the review wrapper stays on the inference broker', () => {
 
 // Renovate's matchStrings are JavaScript regular expressions, so this one
 // runs them here rather than in lint/tests/wrappers.rs.
-test('Renovate tracks all three review pins from main, without automerge or dispatch updates', () => {
+test('Renovate tracks all three pins of each wrapper from main, without automerge', () => {
   const config = JSON.parse(read('../renovate.json'));
   assert.equal(config.customManagers.length, 1);
   const manager = config.customManagers[0];
   assert.equal(manager.customType, 'regex');
-  assert.deepEqual(manager.managerFilePatterns, ['/^\\.github/workflows/cgwalters-review\\.yml$/']);
+  assert.deepEqual(manager.managerFilePatterns, ['/^\\.github/workflows/cgwalters-(agentic-job|review)\\.yml$/']);
   assert.equal(manager.datasourceTemplate, 'git-refs');
   assert.equal(manager.packageNameTemplate, 'https://github.com/jmarrero-forge/actions');
   assert.equal(manager.currentValueTemplate, 'main');
   const pattern = new RegExp(manager.matchStrings[0], 'g');
-  const wrapper = read('./cgwalters-review.yml');
-  const pins = [...wrapper.matchAll(pattern)];
-  assert.equal(pins.length, 3);
-  for (const pin of pins) assert.match(pin.groups.currentDigest, /^[0-9a-f]{40}$/);
-  // Exercise the digest-only replacement: preserve the action paths and branch.
-  const updated = wrapper.replace(pattern, match => match.replace(/[0-9a-f]{40}/, 'a'.repeat(40)));
-  assert.equal([...updated.matchAll(pattern)].filter(pin => pin.groups.currentDigest === 'a'.repeat(40)).length, 3);
-  assert.equal([...read('./cgwalters-agentic-job.yml').matchAll(pattern)].length, 0);
+  for (const file of ['./cgwalters-review.yml', './cgwalters-agentic-job.yml']) {
+    const wrapper = read(file);
+    const pins = [...wrapper.matchAll(pattern)];
+    assert.equal(pins.length, 3, file);
+    for (const pin of pins) assert.match(pin.groups.currentDigest, /^[0-9a-f]{40}$/);
+    // Exercise the digest-only replacement: preserve the action paths and branch.
+    const updated = wrapper.replace(pattern, match => match.replace(/[0-9a-f]{40}/, 'a'.repeat(40)));
+    assert.equal([...updated.matchAll(pattern)].filter(pin => pin.groups.currentDigest === 'a'.repeat(40)).length, 3, file);
+  }
   assert.deepEqual(config.packageRules, [{
-    description: "Update the review wrapper's own-action commits together through review, even without release tags",
+    description: "Update the wrappers' own-action commits together through review, even without release tags",
     matchManagers: ['custom.regex'], matchDatasources: ['git-refs'],
     matchPackageNames: [manager.packageNameTemplate], enabled: true,
     groupName: 'review actions', automerge: false,

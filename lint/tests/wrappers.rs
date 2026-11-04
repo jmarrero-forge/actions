@@ -368,16 +368,19 @@ fn review_wrapper_pins_its_own_actions_by_full_commit() {
     }
 }
 
+// Unlike upstream's, our dispatch wrapper pins them too: jmarrero's broker
+// admits it at the commit its caller pins.
 #[test]
-fn dispatch_wrapper_still_follows_main_for_its_own_actions() {
+fn dispatch_wrapper_pins_its_own_actions_by_full_commit() {
+    let text = read(AGENTIC_JOB);
+    let refs = own_action_refs(&text);
     assert_eq!(
-        own_action_refs(&read(AGENTIC_JOB)),
-        [
-            ("admit", "main"),
-            ("deployment", "main"),
-            ("tailscale", "main")
-        ]
+        refs.iter().map(|r| r.0).collect::<Vec<_>>(),
+        ["admit", "deployment", "tailscale"]
     );
+    for (action, r) in refs {
+        assert!(is_commit(r), "{action}: {r}");
+    }
 }
 
 // From v0.5.0 check.yml's detect job asks for `id-token: write`, and GitHub
@@ -647,10 +650,10 @@ fn review_task_treats_the_head_as_hostile_and_defers_to_the_merge_policy() {
 // agentic-job is called at one release: check, apply, prepare and run
 // refuse calls that resolved to different commits, which following main
 // produced for runs spanning an agentic-job merge (tracker#544).
-// workflow/review.test.cjs checks that release's pin. Our own admit and
-// tailscale actions still follow main.
+// workflow/review.test.cjs checks that release's pin. Here our own admit,
+// deployment and tailscale actions are pinned at a commit of main.
 #[test]
-fn agentic_job_is_called_at_one_release_our_own_actions_at_main() {
+fn agentic_job_is_called_at_one_release_our_own_actions_at_a_commit() {
     let workflow = read(AGENTIC_JOB);
     // Our own actions are this copy's, agentic-job stays upstream's.
     let refs: Vec<_> = captures(&workflow, "uses: ")
@@ -691,7 +694,7 @@ fn agentic_job_is_called_at_one_release_our_own_actions_at_main() {
     );
     for (path, r) in &refs {
         if path.starts_with("actions/") {
-            assert_eq!(*r, "main", "{path}");
+            assert!(is_commit(r), "{path}: {r}");
         }
     }
     assert!(!workflow.contains("PINNED_SHA"));
@@ -743,9 +746,13 @@ fn configuration_repository_defaults_to_deployment_json_after_the_input_and_the_
         10,
         "AGENT_CONFIG_REPO: ${{ inputs.agent-config-repo || vars.AGENT_CONFIG_REPO || steps.deployment.outputs.agent-config-repo }}"
     )));
-    assert!(job(&workflow, "target").contains(
-        "\n      - uses: jmarrero-forge/actions/deployment@main\n        id: deployment\n"
-    ));
+    let target = job(&workflow, "target");
+    let deployment = "\n      - uses: jmarrero-forge/actions/deployment@";
+    assert!(target.match_indices(deployment).any(|(i, _)| {
+        target[i + deployment.len()..]
+            .split_once('\n')
+            .is_some_and(|(r, rest)| main_pin(r) && rest.starts_with("        id: deployment\n"))
+    }));
     let action = read("deployment/action.yml");
     assert!(line_then(
         &action,
