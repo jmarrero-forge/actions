@@ -18,7 +18,13 @@ const DIGEST: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef012
 
 /// Records its arguments, one to a line, and answers as FAKE_SUDO_* say.
 const FAKE_SUDO: &str = r#"#!/bin/sh
-printf '%s\n' "$@" > "$FAKE_SUDO_ARGS"
+printf '%s\n' "$@" >> "$FAKE_SUDO_ARGS"
+if [ -n "${FAKE_IMAGE_ID:-}" ]; then
+  case "$2 $3" in
+    'image inspect') printf '%s\n' "$FAKE_IMAGE_ID"; exit 0 ;;
+    'pull --quiet') exit 0 ;;
+  esac
+fi
 printf '%s' "$FAKE_SUDO_STDOUT"
 printf '%s' "$FAKE_SUDO_STDERR" >&2
 exit "${FAKE_SUDO_STATUS:-0}"
@@ -272,6 +278,243 @@ fn checked_in_pin_and_signer_are_valid_and_written_as_outputs() {
     );
 }
 
+// A failed provenance check must not let untrusted image bytes reach
+// acquisition, config or privileged setup. Run the real scripts with a
+// refusing gh, not just a string assertion about their ordering.
+#[test]
+fn failed_attestation_stops_before_image_acquisition_and_setup() {
+    let text = fs::read_to_string(secure_host().join("action.yml")).unwrap();
+    let action = YamlLoader::load_from_str(&text).unwrap().remove(0);
+    let names = [
+        "Verify the image attestation",
+        "Get the image",
+        CONFIG_STEP,
+        "Secure the host",
+    ];
+    // Do not silently ignore a new acquisition/setup step under another
+    // name. The two preparatory steps may precede verification; only trust
+    // export and the final check follow the image setup sequence.
+    assert_eq!(
+        action["runs"]["steps"]
+            .as_vec()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            PIN_STEP,
+            "Install podman where the runner lacks it",
+            names[0],
+            names[1],
+            names[2],
+            names[3],
+            PROXY_STEP,
+            "Prove it",
+        ]
+    );
+    let steps: Vec<_> = action["runs"]["steps"]
+        .as_vec()
+        .unwrap()
+        .iter()
+        .filter(|s| names.contains(&s["name"].as_str().unwrap()))
+        .collect();
+    assert_eq!(steps.len(), names.len());
+    for s in &steps {
+        // Model only default success gating, never always() or a swallowed
+        // failure. An archive deliberately skips the provenance check.
+        assert!(s["continue-on-error"].is_badvalue());
+        if s["name"].as_str() == Some(names[0]) {
+            assert_eq!(s["if"].as_str(), Some("${{ inputs.image-archive == '' }}"));
+            for (key, value) in [
+                ("IMAGE", "${{ steps.pin.outputs.image }}"),
+                ("REPOSITORY", "${{ steps.pin.outputs.repository }}"),
+                ("CERT_IDENTITY", "${{ steps.pin.outputs.cert-identity }}"),
+                ("SOURCE_REF", "${{ steps.pin.outputs.source-ref }}"),
+            ] {
+                assert_eq!(s["env"][key].as_str(), Some(value));
+            }
+        } else {
+            assert!(s["if"].is_badvalue());
+        }
+    }
+    let image = format!("ghcr.io/example/secure-host@{DIGEST}");
+    let id = "a".repeat(64);
+    let action_path = secure_host();
+    for (status, archive) in [("42", ""), ("0", ""), ("42", "image archive.tar")] {
+        let temp = TempDir::new();
+        fs::create_dir(temp.path("bin")).unwrap();
+        let gh = temp.write(
+            "bin/gh",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$RUNNER_TEMP/gh-args\"\necho 'attestation test verifier' >&2\nexit \"$VERIFY_STATUS\"\n",
+        );
+        fs::set_permissions(gh, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut attempted = Vec::new();
+        let mut last = None;
+        for s in &steps {
+            let name = s["name"].as_str().unwrap();
+            if name == names[0] && !archive.is_empty() {
+                continue;
+            }
+            attempted.push(name);
+            let env = match name {
+                "Verify the image attestation" => vec![
+                    ("GH_TOKEN", Path::new("")),
+                    ("IMAGE", Path::new(&image)),
+                    ("REPOSITORY", Path::new("example/builder")),
+                    (
+                        "CERT_IDENTITY",
+                        Path::new(
+                            "https://github.com/example/builder/.github/workflows/release.yml@refs/heads/main",
+                        ),
+                    ),
+                    ("SOURCE_REF", Path::new("refs/heads/main")),
+                ],
+                "Get the image" => vec![
+                    ("IMAGE", Path::new(&image)),
+                    ("ARCHIVE", Path::new(archive)),
+                ],
+                CONFIG_STEP => vec![
+                    ("ACTION", action_path.as_path()),
+                    ("CONFIG", Path::new("")),
+                    ("EGRESS", Path::new("off")),
+                    ("EGRESS_POLICY", Path::new("")),
+                    ("ID", Path::new(&id)),
+                ],
+                "Secure the host" => vec![("ID", Path::new(&id))],
+                _ => unreachable!(),
+            };
+            let out = step(name).run(
+                &temp,
+                &env,
+                &[("VERIFY_STATUS", status), ("FAKE_SUDO_STDOUT", &id)],
+            );
+            let success = out.status.success();
+            last = Some(out);
+            if !success {
+                break; // GitHub's default success() gating.
+            }
+        }
+        let out = last.unwrap();
+        if !archive.is_empty() {
+            // The acquisition stub does not supply an archive image; only
+            // prove the documented bypass reaches load without invoking gh.
+            assert_eq!(temp.read("gh-args"), None);
+            assert!(temp.read("sudo-args").unwrap().contains("\nload\n"));
+        } else {
+            assert_eq!(
+                temp.read("gh-args").unwrap(),
+                format!(
+                    "attestation\nverify\noci://{image}\n--repo\nexample/builder\n--cert-identity\nhttps://github.com/example/builder/.github/workflows/release.yml@refs/heads/main\n--source-ref\nrefs/heads/main\n--deny-self-hosted-runners\n"
+                )
+            );
+            if status == "42" {
+                failed_with(&out, "attestation test verifier");
+                assert_eq!(out.status.code(), Some(42));
+                assert_eq!(attempted, [names[0]]);
+                assert_eq!(temp.read("sudo-args"), None);
+                assert_eq!(temp.read("output"), None);
+                assert_eq!(temp.read("secure-host/config.toml"), None);
+            } else {
+                succeeded(&out);
+                assert_eq!(attempted, names);
+                assert!(temp.read("sudo-args").unwrap().contains("\n--privileged\n"));
+            }
+        }
+    }
+}
+
+// Both the standalone image's compatibility entrypoint and the older
+// image accept this interface. Select by inspected ID, never by a mutable
+// tag, including when the caller tests an unreleased image archive.
+#[test]
+fn selected_image_is_inspected_and_setup_uses_its_id() {
+    let image = format!("ghcr.io/example/secure-host@{DIGEST}");
+    let id = "a".repeat(64);
+    for archive in ["", "image archive.tar"] {
+        let temp = TempDir::new();
+        let out = step("Get the image").run(
+            &temp,
+            &[
+                ("IMAGE", Path::new(&image)),
+                ("ARCHIVE", Path::new(archive)),
+            ],
+            &[
+                ("FAKE_IMAGE_ID", &id),
+                (
+                    "FAKE_SUDO_STDOUT",
+                    "Loaded image: localhost/unreleased:latest\n",
+                ),
+            ],
+        );
+        succeeded(&out);
+        assert_eq!(temp.read("output").unwrap(), format!("id={id}\n"));
+        let (load, selected) = if archive.is_empty() {
+            (format!("podman\npull\n--quiet\n{image}\n"), image.as_str())
+        } else {
+            (
+                format!("podman\nload\n--quiet\n--input\n{archive}\n"),
+                "localhost/unreleased:latest",
+            )
+        };
+        assert_eq!(
+            temp.read("sudo-args").unwrap(),
+            format!("{load}podman\nimage\ninspect\n--format\n{{{{.Id}}}}\n{selected}\n")
+        );
+        fs::remove_file(temp.path("sudo-args")).unwrap();
+        succeeded(&step("Secure the host").run(&temp, &[("ID", Path::new(&id))], &[]));
+        assert_eq!(
+            temp.read("sudo-args").unwrap(),
+            format!(
+                "podman\nrun\n--rm\n--privileged\n--pid=host\n--network=none\n-v\n/:/host\n{id}\n{}/secure-host/config.toml\n",
+                temp.0.display()
+            )
+        );
+    }
+}
+
+#[test]
+fn setup_uses_the_inspected_image_id_and_host_check_is_unchanged() {
+    let text = fs::read_to_string(secure_host().join("action.yml")).unwrap();
+    let action = YamlLoader::load_from_str(&text).unwrap().remove(0);
+    let steps = action["runs"]["steps"].as_vec().unwrap();
+    for name in [CONFIG_STEP, "Secure the host"] {
+        let s = steps
+            .iter()
+            .find(|s| s["name"].as_str() == Some(name))
+            .unwrap();
+        assert_eq!(
+            s["env"]["ID"].as_str(),
+            Some("${{ steps.image.outputs.id }}")
+        );
+    }
+    assert_eq!(step("Prove it").run.trim(), "agentic-job sandbox check");
+}
+
+#[test]
+fn archive_without_exactly_one_image_and_malformed_image_ids_are_refused() {
+    for (loaded, id, want) in [
+        ("", "a".repeat(64), "must hold exactly one image"),
+        (
+            "Loaded image: first\nLoaded image: second\n",
+            "a".repeat(64),
+            "must hold exactly one image",
+        ),
+        ("Loaded image: first\n", "not-an-id".to_owned(), ""),
+    ] {
+        let temp = TempDir::new();
+        let out = step("Get the image").run(
+            &temp,
+            &[
+                ("IMAGE", Path::new("unused")),
+                ("ARCHIVE", Path::new("test.tar")),
+            ],
+            &[("FAKE_IMAGE_ID", &id), ("FAKE_SUDO_STDOUT", loaded)],
+        );
+        failed_with(&out, want);
+        assert_eq!(temp.read("output"), None);
+    }
+}
+
 fn runner_user() -> String {
     let out = Command::new("id").arg("-un").output().unwrap();
     String::from_utf8(out.stdout).unwrap().trim_end().to_owned()
@@ -299,7 +542,7 @@ fn configure(
 
 /// The fake sudo's record of the configuration command.
 fn podman(temp: &TempDir, settings: &[&str]) -> String {
-    let volume = format!("{}/secure-host/in:/in:ro", temp.0.display());
+    let volume = format!("{}/secure-host/in:/in:ro,z", temp.0.display());
     let user = format!("sandbox.runner-user={}", runner_user());
     let mut args = vec![
         "podman",
@@ -463,6 +706,46 @@ fn ci_egress_policy_fixture_keeps_git_fetch_from_github() {
         r#"paths = ["/**/git-upload-pack"]"#,
     ] {
         assert!(github[0].contains(&want), "no {want} in {:?}", github[0]);
+    }
+}
+
+#[test]
+fn metadata_probe_counts_http_errors_as_reachable_but_not_transport_failures() {
+    let temp = TempDir::new();
+    let curl = temp.write(
+        "curl",
+        r#"#!/bin/bash
+if [[ "$*" == *https://github.com/* ]]; then exit "${CONTROL_STATUS:-0}"; fi
+if [[ "$*" == *--fail* && "$METADATA_STATUS" == 401 ]]; then exit 22; fi
+if [[ "$METADATA_STATUS" == unreachable ]]; then exit 7; fi
+exit 0
+"#,
+    );
+    fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", temp.0.display(), std::env::var("PATH").unwrap());
+    for (status, phase, control, success) in [
+        ("200", "before", "0", true),
+        ("401", "before", "0", true),
+        ("unreachable", "before", "0", false),
+        ("200", "after", "0", false),
+        ("401", "after", "0", false),
+        ("unreachable", "after", "0", true),
+        ("unreachable", "after", "7", false),
+    ] {
+        let out = Command::new("just")
+            .arg("--justfile")
+            .arg(secure_host().join("../Justfile"))
+            .args(["secure-host-metadata", phase])
+            .env("PATH", &path)
+            .env("METADATA_STATUS", status)
+            .env("CONTROL_STATUS", control)
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.success(),
+            success,
+            "{status} {phase} {control}: {out:?}"
+        );
     }
 }
 

@@ -4,15 +4,13 @@ rules:
   unpinned-uses:
     config:
       policies:
-        "jmarrero-forge/*": ref-pin
+        "cgwalters-forge/*": ref-pin
         "*": hash-pin
   # Suggests `$/` for every local action, ci.yml's included; we keep `./`
   # (./.agentic-job-source is another repository's checkout anyway).
   self-repository:
     disable: true
-  # The wrappers pin our own actions at a commit, with `# main` for
-  # Renovate to follow, so every later merge here makes the comment "mismatch".
-  ref-version-mismatch:
-    ignore:
-      - cgwalters-agentic-job.yml
-      - cgwalters-review.yml
+# The wrappers' commit pins of our own actions say `# from main`, not
+# `# main`: zizmor reads a one-word comment as a ref and requires it to
+# point at the pinned commit, which fails as soon as main moves on, while
+# impostor-commit still checks that the commit is this repository's.

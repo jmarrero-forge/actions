@@ -46,6 +46,10 @@ runner-labels:
 test:
     cd "{{ justfile_directory() }}" && JUST="{{ just_executable() }}" cargo test --locked
 
+# Opt-in real zizmor regression: GH_TOKEN and installed zizmor (or ZIZMOR).
+test-online-self-pins:
+    cd "{{ justfile_directory() }}" && cargo test --locked --test zizmor online_self_pins_survive_main_advancing -- --ignored
+
 # The check an organization ruleset requires of pull requests
 # (workflows-check.md), run from the root of the target repository's clone
 # with BASE and HEAD set to full commit IDs. Its files are read as Git

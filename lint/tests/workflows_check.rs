@@ -150,12 +150,17 @@ fn plain_ci_produces_one_file_and_exports_its_digest() {
         .iter()
         .find(|s| s["with"]["egress"].as_str().is_some())
         .unwrap();
-    assert!(
-        hardening["uses"]
-            .as_str()
-            .unwrap()
-            .starts_with("cgwalters-forge/actions/secure-host@")
+    // Reviewed actions#180: v0.6.9, binary 57119eeffa17ea41b383cfdaf8370b8abeba8868,
+    // image sha256:008d34bf9598ef83d7859772200f26637814d2cd105028457208ddc87d69788b.
+    // Keeps this action's config --host / sandbox check contract and reports
+    // refused methods/hosts without signed URLs; newer images need review.
+    assert_eq!(
+        hardening["uses"].as_str(),
+        Some("cgwalters-forge/actions/secure-host@466a490e983ff07e6fb076fa4bd8b4d5f918fcd6")
     );
+    assert!(workflow["permissions"].as_hash().unwrap().is_empty());
+    assert_eq!(build["permissions"].as_hash().unwrap().len(), 1);
+    assert_eq!(build["permissions"]["contents"].as_str(), Some("read"));
     assert_eq!(hardening["with"].as_hash().unwrap().len(), 1);
     assert_eq!(hardening["with"]["egress"].as_str(), Some("write-policy"));
     let payload = steps

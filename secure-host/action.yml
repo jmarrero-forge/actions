@@ -153,7 +153,7 @@ runs:
         else
           settings+=(--boolean egress.write-policy=false)
         fi
-        if ! err=$(sudo podman run --rm --network=none --entrypoint /agentic-job -v "$dir/in:/in:ro" "$ID" \
+        if ! err=$(sudo podman run --rm --network=none --entrypoint /agentic-job -v "$dir/in:/in:ro,z" "$ID" \
           config --host --from /in/config.toml "${settings[@]}" 2>&1 > "$dir/config.out"); then
           echo "::error::host configuration refused: $err"; exit 1
         fi

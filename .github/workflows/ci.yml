@@ -2,6 +2,7 @@
 name: ci
 
 on:
+  merge_group: {types: [checks_requested]}
   pull_request:
   push:
     branches: [main]
@@ -20,7 +21,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24.2.0
+      - uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0
         with:
           globs: "**/*.md"
       # Relative links and anchors only: external sites make CI flaky.
@@ -35,9 +36,13 @@ jobs:
       - name: lint unit tests
         if: ${{ !cancelled() }}
         run: just test-lint
-      - name: secure-host unit tests
+      # Build only in CI, not in composite actions on each agent job. The
+      # release binary and checked-in SHA-256 pin are needed before cutover.
+      - name: Rust action helper tests
         if: ${{ !cancelled() }}
-        run: just test-secure-host
+        run: just test-action-scripts
+      - name: Rust sandbox-share dry run
+        run: cargo test --locked --manifest-path action-scripts/Cargo.toml --test cli root_share_dry_run -- --ignored
       # sandbox-share on this runner: content, a file and a directory are
       # shared root-owned and read-only, and a symlink is refused.
       - name: Make files to share
@@ -71,7 +76,7 @@ jobs:
       - name: app-token unit tests
         run: node --test app-token/*.test.mjs
       - name: cgwalters-agentic-job unit tests
-        run: node --test .github/workflows/*.test.mjs
+        run: node --test .github/workflows/*.test.mjs workflow/*.test.mjs
       # tailscale without a tailnet: with no id-token permission the login
       # fails after tailscaled started (and after the job user reached its
       # LocalAPI, which the action's own readiness check does), so this

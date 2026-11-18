@@ -9,3 +9,8 @@ publish = false
 
 [dependencies]
 yaml-rust2 = "0.13.0"
+
+[dev-dependencies]
+anyhow = "1"
+serde_json = "1"
+tempfile = "3"

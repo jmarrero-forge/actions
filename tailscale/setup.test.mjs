@@ -7,35 +7,37 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { settings } from './setup.mjs';
 
-// jmarrero-forge's entry names the runners' tag and no proxy (a private
-// address); its client ID comes from the calling repository's variable.
+// cgwalters-forge's broker moved; the others stay on the old host until
+// their tailnet membership of the new one is confirmed.
 test('known organizations supply join settings and proxy', () => {
   for (const [owner, proxy] of [
-    ['jmarrero-forge', ''],
+    ['bootc-dev', 'http://100.114.231.4:18080'],
+    ['cgwalters-forge-stage', 'http://100.114.231.4:18080'],
+    ['cgwalters-forge', 'http://100.114.231.4:18080'],
   ]) {
     const result = settings(owner);
     assert.equal(result.audience, `api.tailscale.com/${result['oauth-client-id']}`);
-    assert.equal(result.tags, 'tag:agentic-job');
+    assert.equal(result.tags, 'tag:bootc-dev-sandbox');
     assert.equal(result.proxy, proxy);
   }
 });
 
 test('each setting can be overridden and audience follows an overridden client', () => {
-  assert.deepEqual(settings('jmarrero-forge', {
+  assert.deepEqual(settings('bootc-dev', {
     'oauth-client-id': 'custom', tags: 'tag:custom', proxy: 'http://example.test',
   }), {
     'oauth-client-id': 'custom', audience: 'api.tailscale.com/custom',
     tags: 'tag:custom', proxy: 'http://example.test',
   });
-  assert.equal(settings('jmarrero-forge', { audience: 'custom' }).audience, 'custom');
-  assert.equal(settings('jmarrero-forge', { tags: '' }).tags, 'tag:agentic-job');
+  assert.equal(settings('bootc-dev', { audience: 'custom' }).audience, 'custom');
+  assert.equal(settings('bootc-dev', { tags: '' }).tags, 'tag:bootc-dev-sandbox');
 });
 
 test('unknown owners and output injection fail clearly', () => {
   for (const owner of ['unknown', '__proto__', 'constructor']) {
     assert.throws(() => settings(owner), /No tailnet settings for GitHub organization/);
   }
-  assert.throws(() => settings('jmarrero-forge', { proxy: 'url\ninjected=value' }), /single-line/);
+  assert.throws(() => settings('bootc-dev', { proxy: 'url\ninjected=value' }), /single-line/);
 });
 
 test('an unlisted organization joins with its own client ID and tags, both', () => {
@@ -55,16 +57,20 @@ test('an unlisted organization joins with its own client ID and tags, both', () 
   assert.throws(() => settings('other-org', { 'oauth-client-id': 'other', tags: 'tag:a\ninjected=value' }), /single-line/);
 });
 
-// The wrappers pass the calling repository's variables, never a
-// dispatcher's input, so that another deployment sets its login once.
+// Each wrapper's register job, the one federated join, passes the calling
+// repository's variables, never a dispatcher's input, so that another
+// deployment sets its login once; the agent job joins with its key.
 test('both wrappers join with the repository variables for the login', () => {
+  const read = file => readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8');
   for (const file of ['cgwalters-agentic-job.yml', 'cgwalters-review.yml']) {
-    const text = readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8');
-    const join = text.split('- name: Join the tailnet\n')[1].split(/\n {6}- /)[0];
+    const join = read(file).split('- name: Join the tailnet and mint the agent job\'s key\n')[1]
+      .split(/\n {6}- /)[0].split('\n        with:\n')[1];
     assert.match(join, /\n {10}oauth-client-id: \$\{\{ vars\.AGENTIC_JOB_TAILSCALE_OAUTH_CLIENT_ID \}\}\n/, file);
     assert.match(join, /\n {10}tags: \$\{\{ vars\.AGENTIC_JOB_TAILSCALE_TAGS \}\}(\n|$)/, file);
     assert.doesNotMatch(join, /inputs\./, file);
   }
+  const agent = read('cgwalters-agent.yml').split('- name: Join the tailnet\n')[1].split(/\n {6}- /)[0];
+  assert.doesNotMatch(agent, /oauth-client-id|vars\.|inputs\./);
 });
 
 test('the setup subprocess appends outputs and rejects injection before writing', () => {
@@ -73,8 +79,8 @@ test('the setup subprocess appends outputs and rejects injection before writing'
   const prefix = 'existing=value\n';
   try {
     for (const scenario of [
-      { owner: 'jmarrero-forge', overrides: {}, status: 0 },
-      { owner: 'jmarrero-forge', overrides: {
+      { owner: 'bootc-dev', overrides: {}, status: 0 },
+      { owner: 'cgwalters-forge', overrides: {
         OAUTH_CLIENT_ID: 'custom', AUDIENCE: 'custom-audience',
         TAGS: 'tag:custom', PROXY: 'http://example.test',
       }, status: 0 },
@@ -82,7 +88,7 @@ test('the setup subprocess appends outputs and rejects injection before writing'
       { owner: 'unknown', overrides: { OAUTH_CLIENT_ID: 'other', TAGS: 'tag:other' }, status: 0 },
       { owner: 'unknown', overrides: { OAUTH_CLIENT_ID: 'other' }, status: 1, error: /No tailnet settings/ },
       ...['\n', '\r', '\r\n'].map(newline => ({
-        owner: 'jmarrero-forge', overrides: { PROXY: `url${newline}injected=value` },
+        owner: 'bootc-dev', overrides: { PROXY: `url${newline}injected=value` },
         status: 1, error: /single-line/,
       })),
     ]) {
