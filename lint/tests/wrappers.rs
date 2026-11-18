@@ -209,10 +209,7 @@ fn main_pins_use_the_tested_annotation() {
         let text = read(file);
         for (action, r) in own_action_refs(&text) {
             if is_commit(r) {
-                let pin = captures(
-                    &text,
-                    &format!("uses: cgwalters-forge/actions/{action}@{r}"),
-                );
+                let pin = captures(&text, &format!("uses: jmarrero-forge/actions/{action}@{r}"));
                 assert!(
                     pin.iter().all(|c| c.trim() == MAIN_PIN_COMMENT),
                     "{file}: {action}@{r}: {pin:?}"
@@ -224,7 +221,7 @@ fn main_pins_use_the_tested_annotation() {
 
 /// Each (action, ref) of TEXT's calls of this repository's actions.
 fn own_action_refs(text: &str) -> Vec<(&str, &str)> {
-    text.match_indices("uses: cgwalters-forge/actions/")
+    text.match_indices("uses: jmarrero-forge/actions/")
         .filter_map(|(i, prefix)| {
             let rest = &text[i + prefix.len()..];
             let token = &rest[..rest.find(char::is_whitespace).unwrap_or(rest.len())];
@@ -536,7 +533,7 @@ fn admits_first(text: &str, gate: &str) {
     );
     assert!(
         first_steps(body).iter().any(|step| step
-            .strip_prefix("- uses: cgwalters-forge/actions/admit@")
+            .strip_prefix("- uses: jmarrero-forge/actions/admit@")
             .is_some_and(|r| r == "main" || main_pin(r))),
         "{gate} begins with the admit action"
     );
@@ -695,7 +692,9 @@ fn review_wrapper_pins_its_own_actions_by_full_commit() {
             REVIEW,
             &["admit", "deployment", "tailscale", "tailscale"][..],
         ),
-        (AGENT, &["tailscale", "secure-host"]),
+        // secure-host carries no identity and stays at upstream's commit
+        // pin, the only owner workflows-check accepts for it.
+        (AGENT, &["tailscale"]),
     ] {
         let text = read(file);
         let refs = own_action_refs(&text);
@@ -707,26 +706,25 @@ fn review_wrapper_pins_its_own_actions_by_full_commit() {
         for (action, r) in refs {
             assert!(is_commit(r), "{file}: {action}: {r}");
         }
-        for r in captures(&text, "uses: cgwalters-forge/actions/tailscale@") {
+        for r in captures(&text, "uses: jmarrero-forge/actions/tailscale@") {
             assert!(main_pin(r), "{file}: {r}");
         }
     }
 }
 
+// Unlike upstream's, our dispatch wrapper pins its own actions for every
+// kind: our broker admits it at the commit its caller pins.
 #[test]
-fn dispatch_wrapper_still_follows_main_for_its_own_actions() {
+fn dispatch_wrapper_pins_its_own_actions_for_every_kind() {
     let workflow = read(AGENTIC_JOB);
     let refs = own_action_refs(&workflow);
-    assert_eq!(
-        refs.iter()
-            .copied()
-            .filter(|(_, r)| *r == "main")
-            .collect::<Vec<_>>(),
-        [("admit", "main"), ("deployment", "main")]
-    );
     assert_eq!(refs.len(), 5);
-    for (action, r) in refs.into_iter().filter(|(_, r)| *r != "main") {
+    for (action, r) in refs {
         assert!(is_commit(r), "{action}: {r}");
+    }
+    for r in captures(&workflow, "uses: jmarrero-forge/actions/") {
+        let r = r.split_once('@').unwrap().1;
+        assert!(main_pin(r), "{r}");
     }
 }
 
@@ -1006,9 +1004,18 @@ fn review_task_requires_project_visibility_before_claiming_missing_membership() 
 #[test]
 fn agentic_job_is_called_at_one_release_our_own_actions_at_main() {
     let workflow = read(AGENTIC_JOB);
-    let refs: Vec<_> = captures(&workflow, "uses: cgwalters-forge/")
+    // Ours calls agentic-job from cgwalters-forge and its own actions here.
+    let refs: Vec<_> = captures(&workflow, "uses: ")
         .into_iter()
         .filter_map(|rest| {
+            rest.strip_prefix("cgwalters-forge/agentic-job/")
+                .map(|rest| ("agentic-job/", rest))
+                .or_else(|| {
+                    rest.strip_prefix("jmarrero-forge/actions/")
+                        .map(|rest| ("actions/", rest))
+                })
+        })
+        .filter_map(|(repo, rest)| {
             let (token, comment) = rest
                 .split_once(' ')
                 .map_or((rest, None), |(t, c)| (t, Some(c)));
@@ -1021,10 +1028,11 @@ fn agentic_job_is_called_at_one_release_our_own_actions_at_main() {
             token
                 .rsplit_once('@')
                 .filter(|(path, r)| !path.is_empty() && !r.is_empty())
+                .map(|(path, r)| (format!("{repo}{path}"), r))
         })
         .collect();
     assert_eq!(
-        refs.iter().map(|r| r.0).collect::<Vec<_>>(),
+        refs.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
         [
             "actions/admit",
             "actions/admit",
@@ -1201,9 +1209,17 @@ fn configuration_repository_defaults_to_deployment_json_after_the_input_and_the_
         10,
         "AGENT_CONFIG_REPO: ${{ inputs.agent-config-repo || vars.AGENT_CONFIG_REPO || steps.deployment.outputs.agent-config-repo }}"
     )));
-    assert!(job(&workflow, "target").contains(
-        "\n      - uses: cgwalters-forge/actions/deployment@main\n        id: deployment\n"
-    ));
+    // Pinned by commit, unlike upstream's @main (see the wrapper).
+    let target = job(&workflow, "target");
+    let pin = captures(
+        &target,
+        "\n      - uses: jmarrero-forge/actions/deployment@",
+    );
+    assert!(pin.iter().all(|r| main_pin(r)), "{pin:?}");
+    assert!(target.contains(&format!(
+        "\n      - uses: jmarrero-forge/actions/deployment@{}\n        id: deployment\n",
+        pin[0]
+    )));
     let action = read("deployment/action.yml");
     assert!(line_then(
         &action,
@@ -1234,7 +1250,7 @@ fn model_defaults_to_deployment_json_after_the_input_and_the_variable() {
         6,
         "agent-model: ${{ steps.deployment.outputs.agent-model }}"
     )));
-    let deployment = "\n      - uses: cgwalters-forge/actions/deployment@";
+    let deployment = "\n      - uses: jmarrero-forge/actions/deployment@";
     assert!(admit.match_indices(deployment).any(|(i, _)| {
         admit[i + deployment.len()..]
             .split_once('\n')
@@ -1354,7 +1370,7 @@ fn safe_output_contract_keeps_caller_bounds_counts_and_apply_token() {
 fn agent_joins_the_tailnet_with_the_register_jobs_key() {
     let agent = job(&read(AGENT), "agent");
     assert!(agent.contains(
-        "\n      - name: Join the tailnet\n        uses: cgwalters-forge/actions/tailscale@"
+        "\n      - name: Join the tailnet\n        uses: jmarrero-forge/actions/tailscale@"
     ));
     assert!(agent.contains(&line(10, "authkey: ${{ secrets.TAILNET_KEY }}")));
     for file in [AGENTIC_JOB, REVIEW] {

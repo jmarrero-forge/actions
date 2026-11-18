@@ -531,7 +531,7 @@ fn ordinary_review_submit_fails_closed_and_never_enters_pat_apply() {
 fn ordinary_review_privileged_dependencies_are_exclusive_literal_pins() {
     let workflow = yaml(&read(DISPATCH));
     for (job, action) in [("target", "admit"), ("target", "deployment")] {
-        let prefix = format!("cgwalters-forge/actions/{action}@");
+        let prefix = format!("jmarrero-forge/actions/{action}@");
         let steps: Vec<_> = workflow["jobs"][job]["steps"]
             .as_vec()
             .unwrap()
@@ -577,12 +577,9 @@ fn ordinary_review_privileged_dependencies_are_exclusive_literal_pins() {
                 .unwrap()
                 .strip_prefix(&prefix)
                 .unwrap();
-            if kind == "review" {
-                assert_eq!(reference.len(), 40);
-                assert!(reference.bytes().all(|b| b.is_ascii_hexdigit()));
-            } else {
-                assert_eq!(reference, "main");
-            }
+            // Unlike upstream's, ours pins every kind (see the wrapper).
+            assert_eq!(reference.len(), 40, "{kind}");
+            assert!(reference.bytes().all(|b| b.is_ascii_hexdigit()));
         }
     }
     // The tailnet join is privileged for every kind: one pinned step in
@@ -611,7 +608,7 @@ fn ordinary_review_privileged_dependencies_are_exclusive_literal_pins() {
         let reference = joins[0]["uses"]
             .as_str()
             .unwrap()
-            .strip_prefix("cgwalters-forge/actions/tailscale@")
+            .strip_prefix("jmarrero-forge/actions/tailscale@")
             .unwrap();
         assert_eq!(reference.len(), 40, "{file}");
         assert!(reference.bytes().all(|b| b.is_ascii_hexdigit()), "{file}");

@@ -23,7 +23,7 @@ test('Renovate tracks the wrappers\' own-action pins from main without automerge
   }
   assert.ok(!eligible.test('.github/workflows/review.yml'));
   assert.equal(manager.datasourceTemplate, 'git-refs');
-  assert.equal(manager.packageNameTemplate, 'https://github.com/cgwalters-forge/actions');
+  assert.equal(manager.packageNameTemplate, 'https://github.com/jmarrero-forge/actions');
   assert.equal(manager.currentValueTemplate, 'main');
   const pattern = new RegExp(manager.matchStrings[0], 'g');
   const wrapper = read('./cgwalters-review.yml');
@@ -43,9 +43,10 @@ test('Renovate tracks the wrappers\' own-action pins from main without automerge
       assert.doesNotMatch(updated, /@[0-9a-f]{40} # main(?:\r?\n|$)/);
     }
   }
-  // admit and deployment for the dispatch wrapper's review path, and each
-  // wrapper's register job's tailnet join; the shared agent job's join.
-  for (const [file, count] of [['./cgwalters-agentic-job.yml', 3], ['./cgwalters-agent.yml', 1]]) {
+  // admit and deployment for each of the dispatch wrapper's paths (ours
+  // pins the non-review one too), and each wrapper's register job's tailnet
+  // join; the shared agent job's join.
+  for (const [file, count] of [['./cgwalters-agentic-job.yml', 5], ['./cgwalters-agent.yml', 1]]) {
     assert.equal([...read(file).matchAll(pattern)].length, count, file);
   }
   assert.deepEqual(config.packageRules, [{

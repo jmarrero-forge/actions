@@ -69,15 +69,17 @@ fn online_self_pins_survive_main_advancing() {
         let text =
             std::fs::read_to_string(root.join(format!(".github/workflows/{file}.yml"))).unwrap();
         for line in text.lines() {
-            if let Some((_, pin)) = line.split_once("uses: cgwalters-forge/actions/")
+            if let Some((_, pin)) = line.split_once("uses: jmarrero-forge/actions/")
                 && pin.contains(" # from main")
             {
-                pins.push(format!("      - uses: cgwalters-forge/actions/{pin}\n"));
+                pins.push(format!("      - uses: jmarrero-forge/actions/{pin}\n"));
             }
         }
     }
-    // Include the independent advisory register join and the pinned host action.
-    assert_eq!(pins.len(), 9, "exercise every immutable wrapper self-pin");
+    // Include the independent advisory register join and our dispatch
+    // wrapper's admit and deployment for every kind; the host action stays
+    // upstream's pin.
+    assert_eq!(pins.len(), 10, "exercise every immutable wrapper self-pin");
     let checkout = "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with: {persist-credentials: false}\n";
     let audit = |steps: &str| {
         let mut child = Command::new(std::env::var("ZIZMOR").unwrap_or("zizmor".into()))
@@ -104,7 +106,7 @@ fn online_self_pins_survive_main_advancing() {
     // Use a fixed historical pin, not today's wrapper pins: a Renovate PR
     // may legitimately update every wrapper pin to main's current tip.
     // This is the failing pin from run 42488914465, now behind main.
-    let historical = "      - uses: cgwalters-forge/actions/admit@e084c52a9aa07f1279182cfc738de68b96016278 # from main\n";
+    let historical = "      - uses: jmarrero-forge/actions/admit@e084c52a9aa07f1279182cfc738de68b96016278 # from main\n";
     let (status, diagnostics) = audit(historical);
     assert!(status.success(), "{diagnostics}");
     let (status, diagnostics) = audit(&historical.replace("# from main", "# main"));

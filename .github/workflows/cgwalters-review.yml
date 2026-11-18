@@ -33,8 +33,8 @@ jobs:
     outputs:
       agent-model: ${{ steps.deployment.outputs.agent-model }}
     steps:
-      - uses: cgwalters-forge/actions/admit@c9a9501729bc306f3efdc188056b51149c1c9398 # from main
-      - uses: cgwalters-forge/actions/deployment@c9a9501729bc306f3efdc188056b51149c1c9398 # from main
+      - uses: jmarrero-forge/actions/admit@a7920986be9954fecc02147f8293a86c3d50db39 # from main
+      - uses: jmarrero-forge/actions/deployment@a7920986be9954fecc02147f8293a86c3d50db39 # from main
         id: deployment
 
   policy:
@@ -187,7 +187,7 @@ jobs:
       # organization may already set for an OAuth client of another use.
       - name: Join the tailnet and mint the agent job's key
         id: tailnet
-        uses: cgwalters-forge/actions/tailscale@e084c52a9aa07f1279182cfc738de68b96016278 # from main
+        uses: jmarrero-forge/actions/tailscale@a7920986be9954fecc02147f8293a86c3d50db39 # from main
         with:
           hostname: agentic-job-${{ github.run_id }}-${{ github.run_attempt }}
           oauth-client-id: ${{ vars.AGENTIC_JOB_TAILSCALE_OAUTH_CLIENT_ID }}
@@ -448,7 +448,7 @@ jobs:
         run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
       - name: Join the tailnet and mint the advisory job's key
         id: tailnet
-        uses: cgwalters-forge/actions/tailscale@e084c52a9aa07f1279182cfc738de68b96016278 # from main
+        uses: jmarrero-forge/actions/tailscale@a7920986be9954fecc02147f8293a86c3d50db39 # from main
         with:
           hostname: prose-register-${{ github.run_id }}-${{ github.run_attempt }}
           oauth-client-id: ${{ vars.AGENTIC_JOB_TAILSCALE_OAUTH_CLIENT_ID }}

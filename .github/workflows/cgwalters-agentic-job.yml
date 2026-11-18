@@ -238,19 +238,23 @@ jobs:
       # gets identity tokens with this file's `job_workflow_ref`, which the
       # broker and the tailnet admit: refuse an owner not ours here, on a
       # hosted runner, before that job is scheduled.
-      - uses: cgwalters-forge/actions/admit@main
+      # Unlike upstream's, the other kinds pin our own actions by commit
+      # too: jmarrero's broker admits this file at the commit its caller
+      # pins, and main must not change what an admitted job runs behind
+      # that admission.
+      - uses: jmarrero-forge/actions/admit@a7920986be9954fecc02147f8293a86c3d50db39 # from main
         if: ${{ inputs.kind != 'review' }}
       # Moving main must not replace privileged code behind a reviewed pin.
-      - uses: cgwalters-forge/actions/admit@e084c52a9aa07f1279182cfc738de68b96016278 # from main
+      - uses: jmarrero-forge/actions/admit@a7920986be9954fecc02147f8293a86c3d50db39 # from main
         if: ${{ inputs.kind == 'review' }}
       # The model and configuration repository defaults below, from
       # deployment/deployment.json, so that a second deployment's copy sets
       # them there rather than in this file (its copy repoints these
       # `uses:` lines at itself too, which GitHub requires be literal).
-      - uses: cgwalters-forge/actions/deployment@main
+      - uses: jmarrero-forge/actions/deployment@a7920986be9954fecc02147f8293a86c3d50db39 # from main
         id: deployment
         if: ${{ inputs.kind != 'review' }}
-      - uses: cgwalters-forge/actions/deployment@e084c52a9aa07f1279182cfc738de68b96016278 # from main
+      - uses: jmarrero-forge/actions/deployment@a7920986be9954fecc02147f8293a86c3d50db39 # from main
         id: review-deployment
         if: ${{ inputs.kind == 'review' }}
       # Trusted pinned code only; no target checkout and no write token.
@@ -701,7 +705,7 @@ jobs:
       # organization may already set for an OAuth client of another use.
       - name: Join the tailnet and mint the agent job's key
         id: tailnet
-        uses: cgwalters-forge/actions/tailscale@e084c52a9aa07f1279182cfc738de68b96016278 # from main
+        uses: jmarrero-forge/actions/tailscale@a7920986be9954fecc02147f8293a86c3d50db39 # from main
         with:
           hostname: agentic-job-${{ github.run_id }}-${{ github.run_attempt }}
           oauth-client-id: ${{ vars.AGENTIC_JOB_TAILSCALE_OAUTH_CLIENT_ID }}
