@@ -326,20 +326,35 @@ fn dispatched_review_keeps_base_policy_and_credential_free_head_access() {
     assert!(job(&workflow, "apply").contains("inputs.kind != 'review'"));
 }
 
+// jmarrero-forge's broker is on a private tailnet address, which this public
+// repository never writes: the broker is the calling repository's
+// INFERENCE_URL, and the wrappers default only its audience.
 #[test]
 fn broker_defaults_follow_the_tailnet_configuration() {
     let tailnets: serde_json::Value =
         serde_json::from_str(&read("tailscale/tailnets.json")).unwrap();
-    let broker = tailnets["cgwalters-forge"]["proxy"].as_str().unwrap();
+    assert_eq!(tailnets["jmarrero-forge"]["proxy"].as_str().unwrap(), "");
     let review = read(REVIEW);
-    let fallbacks: Vec<_> = review
-        .split("vars.INFERENCE_URL || '")
-        .skip(1)
-        .map(|suffix| suffix.split_once('\'').unwrap().0)
-        .collect();
-    assert_eq!(fallbacks, [broker]);
+    assert_eq!(
+        captures(&review, "\n      inference-url: "),
+        ["${{ vars.INFERENCE_URL }}"; 2]
+    );
+    assert_eq!(
+        captures(&review, "\n      inference-audience: "),
+        ["${{ vars.INFERENCE_AUDIENCE || 'jmarrero-praxis-broker' }}"; 2]
+    );
     let dispatch = read(AGENTIC_JOB);
-    assert_eq!(captures(&dispatch, "\n          BROKER_URL: "), [broker]);
+    assert_eq!(
+        captures(&dispatch, "\n          BROKER_URL: "),
+        ["${{ vars.INFERENCE_URL }}"]
+    );
+    assert_eq!(
+        captures(&dispatch, "\n          BROKER_AUDIENCE: "),
+        ["jmarrero-praxis-broker"]
+    );
+    for text in [&review, &dispatch] {
+        assert!(!text.contains("http://1"), "no tailnet address is written");
+    }
 }
 
 #[test]

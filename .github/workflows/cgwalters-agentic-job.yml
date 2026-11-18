@@ -115,7 +115,7 @@ on:
         default: false
       # Deployment settings, for a caller that must differ; see the header.
       agent:
-        description: "opencode, claude or vibe; empty: the variable AGENT, else opencode. fake is unsupported"
+        description: "opencode, claude or vibe; empty: the variable AGENT, else claude. fake is unsupported"
         type: string
         default: ""
       model:
@@ -274,14 +274,14 @@ jobs:
           IDLE_MINUTES: ${{ inputs.idle-minutes }}
           # The deployment's defaults: the one place they are written, but
           # for AGENT_MODEL's and AGENT_CONFIG_REPO's, which deployment.json holds.
-          AGENT: ${{ inputs.agent || vars.AGENT || 'opencode' }}
+          AGENT: ${{ inputs.agent || vars.AGENT || 'claude' }}
           AGENT_MODEL: ${{ inputs.model || vars.AGENT_MODEL || steps.deployment.outputs.agent-model }}
           AGENT_RUNNER: ${{ inputs.runner || vars.AGENT_RUNNER || '"ubuntu-26.04"' }}
           # The broker's URL and audience default together, in the script.
           INFERENCE_URL: ${{ inputs.inference-url || vars.INFERENCE_URL }}
           INFERENCE_AUDIENCE: ${{ inputs.inference-audience || vars.INFERENCE_AUDIENCE }}
-          BROKER_URL: http://100.114.231.4:18080
-          BROKER_AUDIENCE: praxis-credential-broker
+          BROKER_URL: ${{ vars.INFERENCE_URL }}
+          BROKER_AUDIENCE: jmarrero-praxis-broker
           INFERENCE_REGISTER: ${{ inputs.inference-register }}
           INFERENCE_PROVIDER: ${{ inputs.inference-provider }}
           # Whether the caller passed a key, never the key.

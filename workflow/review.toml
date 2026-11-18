@@ -1,7 +1,7 @@
 # Automatic events admit forks; the called review workflow restricts automatic
 # starts to OWNER/MEMBER/COLLABORATOR to prevent shared-budget exhaustion.
 hosts = ["github.com"]
-repos = ["cgwalters-forge/actions"]
+repos = ["jmarrero-forge/actions"]
 bases = ["main"]
 max_outputs = 1
 max_patch_bytes = 1024

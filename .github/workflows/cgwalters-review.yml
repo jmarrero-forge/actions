@@ -70,13 +70,13 @@ jobs:
       notify: none
       allow: ${{ github.event_name == 'issue_comment' && 'workflow/review-command.toml' || 'workflow/review.toml' }}
       config: ${{ vars.AGENT_CONFIG || '.agentic-job-source/.github/agentic-job/hosted.toml' }}
-      agent: ${{ vars.AGENT || 'opencode' }}
+      agent: ${{ vars.AGENT || 'claude' }}
       model: ${{ vars.AGENT_MODEL || needs.admit.outputs.agent-model }}
       # Repository names are configured by the owner, never dispatch inputs.
-      agent-config-repo: ${{ (vars.AGENT == '' || vars.AGENT == 'opencode' || vars.AGENT == 'vibe') && vars.AGENT_CONFIG_REPO || '' }}
-      agent-config-path: ${{ (vars.AGENT == '' || vars.AGENT == 'opencode' || vars.AGENT == 'vibe') && vars.AGENT_CONFIG_PATH || '' }}
-      inference-url: ${{ vars.INFERENCE_URL || 'http://100.114.231.4:18080' }}
-      inference-audience: ${{ vars.INFERENCE_AUDIENCE || 'praxis-credential-broker' }}
+      agent-config-repo: ${{ (vars.AGENT == 'opencode' || vars.AGENT == 'vibe') && vars.AGENT_CONFIG_REPO || '' }}
+      agent-config-path: ${{ (vars.AGENT == 'opencode' || vars.AGENT == 'vibe') && vars.AGENT_CONFIG_PATH || '' }}
+      inference-url: ${{ vars.INFERENCE_URL }}
+      inference-audience: ${{ vars.INFERENCE_AUDIENCE || 'jmarrero-praxis-broker' }}
       max-requests: '150'
       budget: '500'
       timeout: '75'
@@ -391,7 +391,7 @@ jobs:
       agent: opencode
       model: ${{ needs.prose-config.outputs.model }}
       inference-url: ${{ vars.INFERENCE_URL }}
-      inference-audience: ${{ vars.INFERENCE_AUDIENCE || 'praxis-credential-broker' }}
+      inference-audience: ${{ vars.INFERENCE_AUDIENCE || 'jmarrero-praxis-broker' }}
       max-requests: ${{ needs.prose-config.outputs.requests }}
       budget-usd: ${{ needs.prose-config.outputs.usd }}
       timeout: ${{ needs.prose-config.outputs.minutes }}
