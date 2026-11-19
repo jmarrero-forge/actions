@@ -6,10 +6,26 @@ description: >-
 inputs:
   oauth-client-id:
     description: >-
-      Client ID of the Tailscale OIDC federated identity, the only login
-      this action passes on (the job needs id-token write permission).
+      Client ID of the Tailscale OIDC federated identity, the login this
+      action passes on without `authkey` (the job needs id-token write
+      permission).
     required: false
     default: ""
+  authkey:
+    description: >-
+      A single-use key that `mint` made in an earlier job, to join with in
+      place of the federated login, in a job with no identity token. The
+      key carries its tags.
+    required: false
+    default: ""
+  mint:
+    description: >-
+      `true` to mint, after the federated join, a single-use, ephemeral
+      and preauthorized key with the same tags, valid for an hour, as the
+      `key` output: for a later job's `authkey`. Refused with `authkey`
+      and with step debug logging on.
+    required: false
+    default: "false"
   audience:
     description: Audience of the OIDC federated identity.
     required: false
@@ -45,9 +61,25 @@ outputs:
   proxy:
     description: Inference proxy URL for the calling workflow.
     value: ${{ steps.settings.outputs.proxy }}
+  key:
+    description: >-
+      With `mint`, the key for a later job's `authkey`. Pass it on only as
+      a secret of a reusable workflow call, which masks it in that job's log.
+    value: ${{ steps.mint.outputs.key }}
 runs:
   using: composite
   steps:
+    # Before anything is installed or any credential requested.
+    - name: Check the login inputs
+      shell: bash
+      env:
+        AUTHKEY: ${{ inputs.authkey }}
+        MINT: ${{ inputs.mint }}
+      run: |
+        case "$MINT" in true | false) ;; *) echo "::error::mint must be true or false"; exit 1 ;; esac
+        if test -n "$AUTHKEY" && test "$MINT" = true; then
+          echo "::error::mint needs the federated login, not authkey"; exit 1
+        fi
     - name: Choose organization settings
       id: settings
       shell: bash
@@ -89,10 +121,13 @@ runs:
     - name: Connect to the tailnet
       id: join
       uses: tailscale/github-action@99a8333667fff04fdd6cffb46dfd409f8329a7bf # v4.3.0
+      # With authkey, only the key: it carries its tags, and the
+      # federated login would take precedence over it.
       with:
-        oauth-client-id: ${{ steps.settings.outputs.oauth-client-id }}
-        audience: ${{ steps.settings.outputs.audience }}
-        tags: ${{ steps.settings.outputs.tags }}
+        authkey: ${{ inputs.authkey }}
+        oauth-client-id: ${{ inputs.authkey == '' && steps.settings.outputs.oauth-client-id || '' }}
+        audience: ${{ inputs.authkey == '' && steps.settings.outputs.audience || '' }}
+        tags: ${{ inputs.authkey == '' && steps.settings.outputs.tags || '' }}
         hostname: ${{ inputs.hostname }}
         args: ${{ inputs.args }} --accept-dns=false
         statedir: ${{ inputs.statedir }}
@@ -116,6 +151,17 @@ runs:
         echo "/var/run/tailscale: $(sudo stat -c '%a %U:%G' /var/run/tailscale)"
         # root still gets through (by path: RHEL's sudo has no /usr/local/bin in its PATH).
         if test "$JOINED" = true; then sudo /usr/local/bin/tailscale status --self >/dev/null; fi
+    # After the join, so that a key is minted only for a login that works.
+    - name: Mint a key for a later job
+      id: mint
+      if: inputs.mint == 'true'
+      shell: bash
+      env:
+        AUDIENCE: ${{ steps.settings.outputs.audience }}
+        OAUTH_CLIENT_ID: ${{ steps.settings.outputs.oauth-client-id }}
+        TAGS: ${{ steps.settings.outputs.tags }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: node "$ACTION_PATH/mint.mjs"
     - name: Check tailnet identity and proxy
       if: inputs.check == 'true'
       shell: bash

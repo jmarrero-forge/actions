@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFile
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { test } from 'node:test';
-import { MARGIN_MS, PERMISSIONS, appJwt, mint, permissions, repositories, revoke, statePath, token } from './remint.mjs';
+import { MARGIN_MS, appJwt, mint, permissions, repositories, revoke, statePath, token } from './remint.mjs';
 
 // A key made for the test run, never one written down.
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -169,38 +169,6 @@ test('the command prints the token alone on stdout and its mask on stderr', () =
     const bad = spawnSync(process.execPath, [script, ...args], { env: e, encoding: 'utf8' });
     assert.equal(bad.status, 2);
     assert.equal(bad.stdout, '');
-  }
-});
-
-// The action: the scope checked before the mint, every permission input
-// passed on and known to remint.mjs, and upstream pinned by full commit,
-// as every other action here pins it.
-test('the action refuses an empty scope and pins create-github-app-token by commit', () => {
-  const action = readFileSync(new URL('./action.yml', import.meta.url), 'utf8');
-  const uses = [...action.matchAll(/^ +(?:- )?uses: (\S+)/gm)].map(match => match[1]);
-  assert.equal(uses.length, 1);
-  assert.match(uses[0], /^actions\/create-github-app-token@[0-9a-f]{40}$/);
-  assert.ok(action.indexOf('name: Check the scope') < action.indexOf('  uses: '));
-  assert.match(action, /\n {8}repositories: \$\{\{ inputs\.repositories \}\}\n/);
-  assert.match(action, /\n {8}LC_ALL: C\n/);
-  const inputs = [...action.matchAll(/^ {2}permission-([a-z-]+):$/gm)].map(match => match[1].replaceAll('-', '_'));
-  assert.deepEqual(inputs, PERMISSIONS);
-  for (const name of inputs.map(input => input.replaceAll('_', '-'))) {
-    assert.ok(action.includes(`\n        permission-${name}: \${{ inputs.permission-${name} }}\n`), name);
-    assert.ok(action.includes(`\n          \${{ inputs.permission-${name} }}\n`), name);
-  }
-  const check = action.match(/run: \|\n((?: {8}.*\n)+?) {4}#/)[1].replace(/^ {8}/gm, '');
-  const cases = [['', 'write', 1], [' ,\n', 'write', 1], ['actions', '', 1], ['actions', '      ', 1],
-    ['actions', '   write   ', 0], ['a,\nb', 'read write', 0], ['a\r\nb.c_d-1\r\n', 'write', 0],
-    // Whitespace that JavaScript's trim, and so upstream, drops: a no-break
-    // space, a byte order mark, a line separator, an ideographic space.
-    ...[0xa0, 0xfeff, 0x2028, 0x3000].map(code => String.fromCharCode(code))
-      .flatMap(space => [space, `a,${space}`, ` ,${space},${space}\r`])
-      .concat(['\r', ' \r ', '\r,\r', '\r\n,\t\v\f'])
-      .map(value => [value, 'write', 1])];
-  for (const [value, granted, status] of cases) {
-    const run = spawnSync('bash', ['-c', check], { env: { REPOSITORIES: value, PERMISSIONS: granted, LC_ALL: 'C' }, encoding: 'utf8' });
-    assert.equal(run.status, status, `${JSON.stringify(value)} ${JSON.stringify(granted)}`);
   }
 });
 

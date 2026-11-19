@@ -1,0 +1,6 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "The org-wide default (renovate/README.md): bootc-dev's shared configuration, less its Signed-off-by footer",
+  "extends": ["github>bootc-dev/infra:renovate-shared-config.json"],
+  "commitBody": ""
+}

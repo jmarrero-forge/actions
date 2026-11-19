@@ -38,11 +38,11 @@ jobs:
           persist-credentials: false
       # Stop build steps sending HTTP writes to arbitrary destinations;
       # reads and runner endpoints remain open. Egress is off by default.
-      - uses: cgwalters-forge/actions/secure-host@c9a9501729bc306f3efdc188056b51149c1c9398 # main on 2026-11-02
+      - uses: cgwalters-forge/actions/secure-host@466a490e983ff07e6fb076fa4bd8b4d5f918fcd6 # main on 2026-11-04
         with:
           egress: write-policy
       # The runner's user from here on: no root and no metadata service.
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
           tool: just@1.58.0
       - run: just test-secure-host

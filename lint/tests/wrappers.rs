@@ -1,7 +1,7 @@
 //! The wrapper workflows' structure, read as text from .github/workflows,
 //! and the few steps of theirs that are shell, run through bash. The tests
 //! that execute the target job's github-script step or Renovate's regular
-//! expressions, and those about inference credentials, stay in
+//! expressions stay in
 //! cgwalters-agentic-job.test.mjs.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,6 +15,106 @@ use yaml_rust2::{Yaml, YamlLoader};
 const AGENTIC_JOB: &str = ".github/workflows/cgwalters-agentic-job.yml";
 const REVIEW: &str = ".github/workflows/cgwalters-review.yml";
 const REVIEW_CALLER: &str = ".github/workflows/review.yml";
+// Both wrappers' agent job, called by local path.
+const AGENT: &str = ".github/workflows/cgwalters-agent.yml";
+
+// Keep refused legacy inputs declared so callers get an actionable target
+// error, but never forward a provider credential or session listener to the
+// runner-only agent. The executable refusal cases remain in the Node suite.
+#[test]
+fn runner_only_refused_inputs_and_credential_wiring() {
+    let text = read(AGENTIC_JOB);
+    let workflow = YamlLoader::load_from_str(&text).unwrap().remove(0);
+    let call = &workflow["on"]["workflow_call"];
+    for (name, kind, default) in [
+        ("session", "boolean", Yaml::Boolean(false)),
+        ("idle-minutes", "string", Yaml::String(String::new())),
+        (
+            "inference-register",
+            "string",
+            Yaml::String("github-oidc".into()),
+        ),
+        ("inference-provider", "string", Yaml::String(String::new())),
+    ] {
+        let input = &call["inputs"][name];
+        assert_eq!(input["type"].as_str(), Some(kind), "{name}");
+        assert_eq!(input["default"], default, "{name}");
+        assert!(!input["description"].as_str().unwrap().is_empty(), "{name}");
+    }
+    assert_eq!(
+        call["secrets"]["INFERENCE_API_KEY"]["required"],
+        Yaml::Boolean(false)
+    );
+    // Exactly one reference, reduced to a boolean before entering the script.
+    assert_eq!(captures(&text, "secrets.INFERENCE_API_KEY"), [" != '' }}"]);
+    let target = &workflow["jobs"]["target"];
+    let envs: Vec<_> = target["steps"]
+        .as_vec()
+        .unwrap()
+        .iter()
+        .filter_map(|step| step["env"]["INFERENCE_API_KEY_SET"].as_str())
+        .collect();
+    assert_eq!(envs, ["${{ secrets.INFERENCE_API_KEY != '' }}"]);
+    assert_eq!(
+        workflow["jobs"]["policy"]["with"]["inference-register"].as_str(),
+        Some("github-oidc")
+    );
+    let policy = job(&text, "policy");
+    for forbidden in [
+        line(6, "session:"),
+        "idle-minutes".into(),
+        "inference-provider".into(),
+    ] {
+        assert!(!policy.contains(&forbidden), "policy: {forbidden}");
+    }
+    assert!(workflow["jobs"]["policy"]["with"]["session"].is_badvalue());
+    assert!(workflow["jobs"]["agent"]["with"]["session"].is_badvalue());
+    for forbidden in [
+        "TAILNET_DOMAIN",
+        "session-host",
+        "session-endpoint",
+        "inference-api-key",
+    ] {
+        assert!(!text.contains(forbidden), "{forbidden}");
+    }
+    let agent = read(AGENT);
+    for forbidden in [
+        "inputs.session",
+        "statedir:",
+        "inference-api-key",
+        "mcp-token",
+        "agent-user",
+        "INFERENCE_API_KEY",
+    ] {
+        assert!(!agent.contains(forbidden), "agent: {forbidden}");
+    }
+}
+
+#[test]
+fn inference_defaults_remain_coupled_in_the_target_script() {
+    let text = read(AGENTIC_JOB);
+    let workflow = YamlLoader::load_from_str(&text).unwrap().remove(0);
+    let steps = workflow["jobs"]["target"]["steps"].as_vec().unwrap();
+    let step = steps
+        .iter()
+        .find(|step| !step["env"]["INFERENCE_URL"].is_badvalue())
+        .unwrap();
+    // Independent fallbacks here could send our audience to another URL;
+    // the target script must choose the URL/audience pair together instead.
+    for (name, expected) in [
+        (
+            "INFERENCE_URL",
+            "${{ inputs.inference-url || vars.INFERENCE_URL }}",
+        ),
+        (
+            "INFERENCE_AUDIENCE",
+            "${{ inputs.inference-audience || vars.INFERENCE_AUDIENCE }}",
+        ),
+        ("INFERENCE_REGISTER", "${{ inputs.inference-register }}"),
+    ] {
+        assert_eq!(step["env"][name].as_str(), Some(expected), "{name}");
+    }
+}
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -84,10 +184,39 @@ fn is_commit(r: &str) -> bool {
     r.len() == 40 && r.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+// Marks a commit pin of our own actions as taken from main, for Renovate
+// (.github/renovate.json). More than one word, so not a ref to zizmor.
+const MAIN_PIN_COMMENT: &str = "# from main";
+
 /// Whether R, what follows a `uses:` line's `@`, is a full commit marked as
 /// taken from main.
 fn main_pin(r: &str) -> bool {
-    r.strip_suffix(" # main").is_some_and(is_commit)
+    r.strip_suffix(MAIN_PIN_COMMENT)
+        .and_then(|r| r.strip_suffix(' '))
+        .is_some_and(is_commit)
+}
+
+// A ref comment of main would hold the pin to main's tip, failing lint at
+// every merge after the pin's commit; a pin taken from main need not stay
+// its tip. The online test in zizmor.rs checks the real audit, not a model
+// of its parser; this offline contract keeps every wrapper on that marker.
+#[test]
+fn main_pins_use_the_tested_annotation() {
+    let commit = "e084c52a9aa07f1279182cfc738de68b96016278";
+    assert!(main_pin(&format!("{commit} {MAIN_PIN_COMMENT}")));
+    assert!(!main_pin(&format!("{commit} # main")));
+    for file in [AGENTIC_JOB, REVIEW, AGENT] {
+        let text = read(file);
+        for (action, r) in own_action_refs(&text) {
+            if is_commit(r) {
+                let pin = captures(&text, &format!("uses: jmarrero-forge/actions/{action}@{r}"));
+                assert!(
+                    pin.iter().all(|c| c.trim() == MAIN_PIN_COMMENT),
+                    "{file}: {action}@{r}: {pin:?}"
+                );
+            }
+        }
+    }
 }
 
 /// Each (action, ref) of TEXT's calls of this repository's actions.
@@ -144,6 +273,205 @@ fn job(workflow: &str, name: &str) -> String {
         .nth(1)
         .unwrap_or_else(|| panic!("no job {name}"));
     format!("\n{}", until_key(after, 2))
+}
+
+#[test]
+fn dispatched_review_keeps_base_policy_and_credential_free_head_access() {
+    let workflow = read(AGENTIC_JOB);
+    let policy = job(&workflow, "policy");
+    for required in [
+        "review-head: ${{ inputs.kind == 'review' && inputs.head || '' }}",
+        "review-task: workflow/review.md",
+        "allow: ${{ inputs.kind == 'review' && needs.target.outputs.review-allow",
+        "inputs.kind == 'review' && needs.target.outputs.review-config",
+        "budget: ${{ inputs.kind == 'review' && '500'",
+        "timeout: '75'",
+    ] {
+        assert!(policy.contains(required), "policy must retain {required}");
+    }
+    let agent_job = job(&workflow, "agent");
+    for required in [
+        line(6, "github-reads: ${{ inputs.kind != 'review' }}"),
+        line(4, "uses: ./.github/workflows/cgwalters-agent.yml"),
+    ] {
+        assert!(
+            agent_job.contains(&required),
+            "agent must retain {required}"
+        );
+    }
+    let agent = job(&read(AGENT), "agent");
+    assert_eq!(agent.matches("uses: actions/checkout@").count(), 2);
+    // Both privileged checkouts come from policy, never a PR head or another
+    // caller input. Check every ref, not merely the presence of one safe ref.
+    assert_eq!(
+        agent
+            .lines()
+            .filter_map(|line| line.trim_start().strip_prefix("ref: "))
+            .collect::<Vec<_>>(),
+        [
+            "${{ fromJSON(inputs.policy).ref }}",
+            "${{ fromJSON(inputs.policy).source-sha }}",
+        ]
+    );
+    for forbidden in ["git fetch", "pulls/", "agent-user"] {
+        assert!(
+            !agent.contains(forbidden),
+            "agent must not contain {forbidden}"
+        );
+    }
+    assert!(agent.contains("github-token: ${{ inputs.github-reads && github.token || '' }}"));
+    assert!(job(&workflow, "apply").contains("inputs.kind != 'review'"));
+}
+
+// jmarrero-forge's broker is on a private tailnet address, which this public
+// repository never writes: the broker is the calling repository's
+// INFERENCE_URL, and the wrappers default only its audience.
+#[test]
+fn broker_defaults_follow_the_tailnet_configuration() {
+    let tailnets: serde_json::Value =
+        serde_json::from_str(&read("tailscale/tailnets.json")).unwrap();
+    assert_eq!(tailnets["jmarrero-forge"]["proxy"].as_str().unwrap(), "");
+    let review = read(REVIEW);
+    assert_eq!(
+        captures(&review, "\n      inference-url: "),
+        ["${{ vars.INFERENCE_URL }}"; 2]
+    );
+    assert_eq!(
+        captures(&review, "\n      inference-audience: "),
+        ["${{ vars.INFERENCE_AUDIENCE || 'jmarrero-praxis-broker' }}"; 2]
+    );
+    let dispatch = read(AGENTIC_JOB);
+    assert_eq!(
+        captures(&dispatch, "\n          BROKER_URL: "),
+        ["${{ vars.INFERENCE_URL }}"]
+    );
+    assert_eq!(
+        captures(&dispatch, "\n          BROKER_AUDIENCE: "),
+        ["jmarrero-praxis-broker"]
+    );
+    for text in [&review, &dispatch] {
+        assert!(!text.contains("http://1"), "no tailnet address is written");
+    }
+}
+
+#[test]
+fn review_stays_on_the_inference_broker() {
+    let review = read(REVIEW);
+    for forbidden in [
+        "INFERENCE_API_KEY",
+        "inference-register",
+        "inference-provider",
+        "inference-api-key",
+    ] {
+        assert!(!review.contains(forbidden), "unexpected {forbidden}");
+    }
+}
+
+#[test]
+fn artifact_only_skips_proposals_and_notifications() {
+    let workflow = read(AGENTIC_JOB);
+    for (name, required) in [
+        (
+            "apply",
+            "always() && inputs.kind != 'review' && !inputs.research-artifact-only",
+        ),
+        (
+            "policy",
+            "SAFE_OUTPUTS_PAT: ${{ inputs.kind != 'review' && !inputs.research-artifact-only && secrets.SAFE_OUTPUTS_PAT || '' }}",
+        ),
+        (
+            "policy",
+            "notify: ${{ (inputs.kind == 'review' || inputs.research-artifact-only) && 'none' || 'comment' }}",
+        ),
+        (
+            "policy",
+            "apply-environment: ${{ inputs.kind != 'review' && !inputs.research-artifact-only && (inputs.apply-environment || vars.APPLY_ENVIRONMENT) || '' }}",
+        ),
+        (
+            "policy",
+            "apply-partial: ${{ !inputs.research-artifact-only && (",
+        ),
+        (
+            "check",
+            "safe-outputs-artifact-id: ${{ needs.agent.outputs.safe-outputs-artifact-id }}",
+        ),
+        (
+            "check",
+            "safe-outputs-artifact-digest: ${{ needs.agent.outputs.safe-outputs-artifact-digest }}",
+        ),
+        (
+            "research-handback",
+            "!cancelled() && inputs.research-artifact-only && inputs.kind == 'research'",
+        ),
+        ("research-handback", "permissions: {}"),
+    ] {
+        assert!(
+            job(&workflow, name).contains(required),
+            "{name}: missing {required}"
+        );
+    }
+    let handback = job(&workflow, "research-handback");
+    for forbidden in [
+        "secrets.",
+        "github.token",
+        "download-artifact",
+        "checkout",
+        "run:",
+    ] {
+        assert!(
+            !handback.contains(forbidden),
+            "handback contains {forbidden}"
+        );
+    }
+    let parsed = YamlLoader::load_from_str(&workflow).unwrap();
+    for (output, field) in [
+        ("research-status", "status"),
+        ("safe-outputs-artifact-id", "artifact-id"),
+        ("safe-outputs-artifact-digest", "artifact-digest"),
+        ("handback-repository", "repository"),
+        ("handback-run-id", "run-id"),
+        ("handback-run-attempt", "run-attempt"),
+        ("handback-agent-job", "agent-job"),
+    ] {
+        assert_eq!(
+            parsed[0]["on"]["workflow_call"]["outputs"][output]["value"].as_str(),
+            Some(format!("${{{{ jobs.research-handback.outputs.{field} }}}}").as_str()),
+            "{output}",
+        );
+    }
+    let review = read(REVIEW);
+    for forbidden in ["research-artifact-only", "research-handback"] {
+        assert!(!review.contains(forbidden), "review contains {forbidden}");
+    }
+}
+
+#[test]
+fn checked_submit_preserves_credentials_and_provenance() {
+    let workflow = read(AGENTIC_JOB);
+    let submit = job(&workflow, "submit");
+    for forbidden in ["SAFE_OUTPUTS_PAT", "checkout", "uses: ./"] {
+        assert!(!submit.contains(forbidden), "submit contains {forbidden}");
+    }
+    for required in [
+        "GH_TOKEN: ${{ github.token }}",
+        "artifact-ids: ${{ needs.policy.outputs.binary-artifact-id }}",
+        "artifact-ids: ${{ needs.check.outputs.artifact-id }}",
+        "HEAD_SHA: ${{ needs.policy.outputs.review-head }}",
+        "AGENT_JOB: ${{ needs.agent.outputs.job }}",
+        "review submit --accepted \"$RUNNER_TEMP/checked/agent_output.json\"",
+        "!cancelled()",
+        "vars.AGENT_REAL_REVIEWS == 'true'",
+        "needs.check.result == 'success'",
+        "needs.check.outputs.artifact-id != ''",
+        "needs.agent.result == 'success'",
+        "needs.agent.outputs.exit == '0'",
+        "contains(fromJSON('[\"APPROVE\", \"CHANGES\"]'), needs.check.outputs.verdict)",
+    ] {
+        assert!(submit.contains(required), "submit missing {required}");
+    }
+    let agent = read(AGENT);
+    assert!(agent.contains(&line(6, "job: ${{ job.check_run_id }}")));
+    assert!(agent.contains("\n      job:\n        value: ${{ jobs.agent.outputs.job }}\n"));
 }
 
 struct Job {
@@ -354,32 +682,49 @@ jobs:
 }
 
 // Moving main must not change privileged review code behind a caller's
-// reviewed wrapper pin. Check every own-repository call, not just tailscale.
+// reviewed wrapper pin. Check every own-repository call, not just tailscale,
+// and the tailnet join of each wrapper's register job and of the agent job
+// both call, which is privileged for every kind.
 #[test]
 fn review_wrapper_pins_its_own_actions_by_full_commit() {
-    let text = read(REVIEW);
-    let refs = own_action_refs(&text);
-    assert_eq!(
-        refs.iter().map(|r| r.0).collect::<Vec<_>>(),
-        ["admit", "deployment", "tailscale"]
-    );
-    for (action, r) in refs {
-        assert!(is_commit(r), "{action}: {r}");
+    for (file, actions) in [
+        (
+            REVIEW,
+            &["admit", "deployment", "tailscale", "tailscale"][..],
+        ),
+        // secure-host carries no identity and stays at upstream's commit
+        // pin, the only owner workflows-check accepts for it.
+        (AGENT, &["tailscale"]),
+    ] {
+        let text = read(file);
+        let refs = own_action_refs(&text);
+        assert_eq!(
+            refs.iter().map(|r| r.0).collect::<Vec<_>>(),
+            actions,
+            "{file}"
+        );
+        for (action, r) in refs {
+            assert!(is_commit(r), "{file}: {action}: {r}");
+        }
+        for r in captures(&text, "uses: jmarrero-forge/actions/tailscale@") {
+            assert!(main_pin(r), "{file}: {r}");
+        }
     }
 }
 
-// Unlike upstream's, our dispatch wrapper pins them too: jmarrero's broker
-// admits it at the commit its caller pins.
+// Unlike upstream's, our dispatch wrapper pins its own actions for every
+// kind: our broker admits it at the commit its caller pins.
 #[test]
-fn dispatch_wrapper_pins_its_own_actions_by_full_commit() {
-    let text = read(AGENTIC_JOB);
-    let refs = own_action_refs(&text);
-    assert_eq!(
-        refs.iter().map(|r| r.0).collect::<Vec<_>>(),
-        ["admit", "deployment", "tailscale"]
-    );
+fn dispatch_wrapper_pins_its_own_actions_for_every_kind() {
+    let workflow = read(AGENTIC_JOB);
+    let refs = own_action_refs(&workflow);
+    assert_eq!(refs.len(), 5);
     for (action, r) in refs {
         assert!(is_commit(r), "{action}: {r}");
+    }
+    for r in captures(&workflow, "uses: jmarrero-forge/actions/") {
+        let r = r.split_once('@').unwrap().1;
+        assert!(main_pin(r), "{r}");
     }
 }
 
@@ -449,10 +794,12 @@ fn review_caller_grants_exactly_the_union_of_the_wrappers_job_grants() {
 // full commit. Every such job, so that a recomposition cannot drop it.
 #[test]
 fn every_job_checks_the_policy_calls_source_before_checking_it_out() {
-    const CHECKOUT: &str = "repository: ${{ needs.policy.outputs.source-repository }}";
+    const CHECKOUT: &str = "repository: ${{ fromJSON(inputs.policy).source-repository }}";
+    // The repository both wrappers' policy `uses:` names.
+    let mut called = BTreeSet::new();
     for file in [AGENTIC_JOB, REVIEW] {
         let workflow = read(file);
-        let called = workflow
+        let repo = workflow
             .match_indices("\n    uses: ")
             .map(|(i, p)| &workflow[i + p.len()..])
             .map(|rest| &rest[..rest.find('\n').unwrap_or(rest.len())])
@@ -463,79 +810,65 @@ fn every_job_checks_the_policy_calls_source_before_checking_it_out() {
                     && !name.is_empty()
                     && !name.contains('/')
                     && !repo.contains(char::is_whitespace))
-                .then_some(repo)
+                .then_some(repo.to_owned())
             })
             .unwrap_or_else(|| panic!("{file}: policy call"));
-        let starts = key_starts(&workflow, 2);
-        let jobs: Vec<_> = starts
+        called.insert(repo);
+        // The wrappers check out nothing of the source themselves.
+        assert!(!workflow.contains(CHECKOUT), "{file}");
+    }
+    let [called] = Vec::from_iter(called).try_into().unwrap();
+    // The agent job checks out the source; each register job runs the
+    // policy call's binary and checks the same first.
+    for (file, part, checks_out) in [
+        (AGENT, "agent", true),
+        (AGENTIC_JOB, "register", false),
+        (REVIEW, "register", false),
+    ] {
+        let workflow = job(&read(file), part);
+        let checkout_text = if checks_out {
+            CHECKOUT
+        } else {
+            "repository: ${{ needs.policy.outputs.source-repository }}"
+        };
+        let steps: Vec<_> = workflow.split("\n      - ").collect();
+        let checkout = steps.iter().position(|step| step.contains(checkout_text));
+        assert_eq!(checkout.is_some(), checks_out, "{file}");
+        let guard = steps[..checkout.unwrap_or(steps.len())]
             .iter()
-            .enumerate()
-            .map(|(index, &start)| {
-                let end = starts
-                    .get(index + 1)
-                    .map_or(workflow.len(), |&next| next - 3);
-                &workflow[start..end]
-            })
-            .collect();
-        let checked: Vec<_> = jobs.iter().filter(|job| job.contains(CHECKOUT)).collect();
-        assert_eq!(
-            checked
-                .iter()
-                .map(|job| job.split(':').next().unwrap())
-                .collect::<Vec<_>>(),
-            ["agent"],
-            "{file}: jobs checking out the source"
-        );
-        for job in checked {
-            let name = job.split(':').next().unwrap();
-            let steps: Vec<_> = job.split("\n      - ").collect();
-            let checkout = steps
-                .iter()
-                .position(|step| step.contains(CHECKOUT))
-                .unwrap();
-            let guard = steps[..checkout]
-                .iter()
-                .find(|step| step.starts_with("name: The policy call's source repository"));
-            let guard = guard.unwrap_or_else(|| panic!("{file}: {name} checks the source first"));
-            assert!(
-                guard.contains(&line(
-                    10,
-                    "SOURCE_REPOSITORY: ${{ needs.policy.outputs.source-repository }}"
-                )),
-                "{file}: {name}"
-            );
-            assert!(
-                guard.contains(&line(
-                    10,
-                    "SOURCE_SHA: ${{ needs.policy.outputs.source-sha }}"
-                )),
-                "{file}: {name}"
-            );
-            let expected = captures(guard, "\n          EXPECTED_REPOSITORY: ")
-                .into_iter()
-                .next()
-                .filter(|v| !v.is_empty() && !v.contains(char::is_whitespace));
-            assert_eq!(expected, Some(called), "{file}: {name}");
-            assert!(
-                guard.contains(
-                    "[[ \"$SOURCE_REPOSITORY\" == \"$EXPECTED_REPOSITORY\" && \"$SOURCE_SHA\" =~ ^[0-9a-f]{40}$ ]] ||\n            { echo \"::error::the policy call is not $EXPECTED_REPOSITORY at a full commit\"; exit 1; }"
-                ),
-                "{file}: {name}"
-            );
+            .find(|step| step.starts_with("name: The policy call's source"))
+            .unwrap_or_else(|| panic!("{file}: checks the source first"));
+        let source = if checks_out {
+            "fromJSON(inputs.policy)"
+        } else {
+            "needs.policy.outputs"
+        };
+        for env in [
+            format!("SOURCE_REPOSITORY: ${{{{ {source}.source-repository }}}}"),
+            format!("SOURCE_SHA: ${{{{ {source}.source-sha }}}}"),
+        ] {
+            assert!(guard.contains(&line(10, &env)), "{file}: {env}");
         }
+        let expected = captures(guard, "\n          EXPECTED_REPOSITORY: ")
+            .into_iter()
+            .next()
+            .filter(|v| !v.is_empty() && !v.contains(char::is_whitespace));
+        assert_eq!(expected, Some(called.as_str()), "{file}");
+        assert!(
+            guard.contains(
+                "[[ \"$SOURCE_REPOSITORY\" == \"$EXPECTED_REPOSITORY\" && \"$SOURCE_SHA\" =~ ^[0-9a-f]{40}$ ]] ||\n            { echo \"::error::the policy call is not $EXPECTED_REPOSITORY at a full commit\"; exit 1; }"
+            ),
+            "{file}"
+        );
     }
 }
 
 #[test]
 fn composed_review_links_its_pinned_helper_to_the_agent_job() {
     let workflow = read(REVIEW);
-    let agent = workflow
-        .split("\n  agent:\n")
-        .nth(1)
-        .unwrap()
-        .split("\n  check:\n")
-        .next()
-        .unwrap();
+    let shared = read(AGENT);
+    assert!(shared.contains("\n      job:\n        value: ${{ jobs.agent.outputs.job }}\n"));
+    let agent = job(&shared, "agent");
     let submit = workflow
         .split("\n  submit:\n")
         .nth(1)
@@ -647,30 +980,46 @@ fn review_task_treats_the_head_as_hostile_and_defers_to_the_merge_policy() {
     }
 }
 
+#[test]
+fn review_task_requires_project_visibility_before_claiming_missing_membership() {
+    let task = read("workflow/review.md");
+    let task = task.split_whitespace().collect::<Vec<_>>().join(" ");
+    for contract in [
+        "An empty `gh issue view --json projectItems` result is not proof",
+        "same token can read the exact target Project",
+        "complete membership query",
+        "membership could not be verified",
+        "Do not turn that uncertainty into a missing-membership finding or blocker",
+        "Do not request broader credentials",
+    ] {
+        assert!(task.contains(contract), "{contract}");
+    }
+}
+
 // agentic-job is called at one release: check, apply, prepare and run
 // refuse calls that resolved to different commits, which following main
 // produced for runs spanning an agentic-job merge (tracker#544).
-// workflow/review.test.cjs checks that release's pin. Here our own admit,
-// deployment and tailscale actions are pinned at a commit of main.
+// Our own admit and deployment actions still follow main for every kind but
+// review.
 #[test]
-fn agentic_job_is_called_at_one_release_our_own_actions_at_a_commit() {
+fn agentic_job_is_called_at_one_release_our_own_actions_at_main() {
     let workflow = read(AGENTIC_JOB);
-    // Our own actions are this copy's, agentic-job stays upstream's.
+    // Ours calls agentic-job from cgwalters-forge and its own actions here.
     let refs: Vec<_> = captures(&workflow, "uses: ")
         .into_iter()
         .filter_map(|rest| {
-            rest.strip_prefix("jmarrero-forge/")
-                .filter(|r| r.starts_with("actions/"))
+            rest.strip_prefix("cgwalters-forge/agentic-job/")
+                .map(|rest| ("agentic-job/", rest))
                 .or_else(|| {
-                    rest.strip_prefix("cgwalters-forge/")
-                        .filter(|r| r.starts_with("agentic-job/"))
+                    rest.strip_prefix("jmarrero-forge/actions/")
+                        .map(|rest| ("actions/", rest))
                 })
         })
-        .filter_map(|rest| {
+        .filter_map(|(repo, rest)| {
             let (token, comment) = rest
                 .split_once(' ')
                 .map_or((rest, None), |(t, c)| (t, Some(c)));
-            if let Some(comment) = comment {
+            if let Some(comment) = comment.filter(|c| *c != MAIN_PIN_COMMENT) {
                 let tag = comment.strip_prefix("# ")?;
                 if tag.is_empty() || tag.contains(char::is_whitespace) {
                     return None;
@@ -679,12 +1028,15 @@ fn agentic_job_is_called_at_one_release_our_own_actions_at_a_commit() {
             token
                 .rsplit_once('@')
                 .filter(|(path, r)| !path.is_empty() && !r.is_empty())
+                .map(|(path, r)| (format!("{repo}{path}"), r))
         })
         .collect();
     assert_eq!(
-        refs.iter().map(|r| r.0).collect::<Vec<_>>(),
+        refs.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
         [
             "actions/admit",
+            "actions/admit",
+            "actions/deployment",
             "actions/deployment",
             "agentic-job/.github/workflows/policy.yml",
             "actions/tailscale",
@@ -694,14 +1046,19 @@ fn agentic_job_is_called_at_one_release_our_own_actions_at_a_commit() {
     );
     for (path, r) in &refs {
         if path.starts_with("actions/") {
-            assert!(is_commit(r), "{path}: {r}");
+            assert!(*r == "main" || is_commit(r), "{path}");
         }
     }
     assert!(!workflow.contains("PINNED_SHA"));
-    assert!(workflow.contains(&line(
-        10,
-        "EXPECTED_REPOSITORY: cgwalters-forge/agentic-job"
-    )));
+    for file in [AGENT, AGENTIC_JOB, REVIEW] {
+        assert!(
+            read(file).contains(&line(
+                10,
+                "EXPECTED_REPOSITORY: cgwalters-forge/agentic-job"
+            )),
+            "{file}"
+        );
+    }
 }
 
 // Without `issue`, apply opens an implement pull request with no closing
@@ -717,9 +1074,115 @@ fn policy_is_given_the_dispatched_item_as_issue_and_nothing_else() {
         ["${{ inputs.item }}"]
     );
     assert!(job(&workflow, "policy").contains("\n      issue: "));
-    // With the item in `repo` itself apply writes `Closes`; an `item-repo`
-    // would make it a mere `Refs`.
-    assert!(!workflow.contains("item-repo:"));
+    // Policy carries the optional item repository through status, check and
+    // apply; cross-repository PR references are Refs rather than Closes.
+    let policy = job(&workflow, "policy");
+    for input in [
+        "item-repo: ${{ inputs.item-repo }}",
+        "id: ${{ inputs.item-repo || inputs.repo }}#${{ inputs.item }}",
+        "repo: ${{ inputs.repo }}",
+        "output-repo: ${{ inputs.repo }}",
+        "comment-target: ${{ inputs.item }}",
+    ] {
+        assert!(policy.contains(&line(6, input)), "{input}");
+    }
+}
+
+#[test]
+fn dispatch_item_repository_defaults_and_routes_issue_text_without_moving_work() {
+    let workflow = YamlLoader::load_from_str(&read(AGENTIC_JOB))
+        .unwrap()
+        .remove(0);
+    let input = &workflow["on"]["workflow_call"]["inputs"]["item-repo"];
+    assert_eq!(input["type"].as_str(), Some("string"));
+    assert_eq!(input["default"].as_str(), Some(""));
+    assert_ne!(input["required"].as_bool(), Some(true));
+    let step = workflow["jobs"]["target"]["steps"]
+        .as_vec()
+        .unwrap()
+        .iter()
+        .find(|step| step["id"].as_str() == Some("target"))
+        .unwrap();
+    assert_eq!(
+        step["env"]["ITEM_REPO"].as_str(),
+        Some("${{ inputs.item-repo }}")
+    );
+    assert_eq!(
+        step["env"]["TARGET_REPO"].as_str(),
+        Some("${{ inputs.repo }}")
+    );
+    let harness = r#"
+const assert = require('node:assert/strict');
+let task;
+let calls = 0;
+const github = { rest: {
+  repos: { get: async () => ({ data: { private: false, visibility: 'public' } }) },
+  issues: { get: async args => {
+    calls++;
+    assert.deepEqual(args, { owner: 'forge', repo: process.env.ITEM_REPO ? 'tracker' : 'work', issue_number: 42 });
+    return { data: { number: 42, title: 'Staged issue', body: 'Task body', user: { login: 'operator' }, author_association: 'OWNER' } };
+  } }
+} };
+const localRequire = name => name === 'node:fs/promises'
+  ? { writeFile: async (_path, text) => { task = text; } } : require(name);
+const run = new (Object.getPrototypeOf(async function(){}).constructor)('github', 'context', 'core', 'require', process.argv[1]);
+run(github, { repo: { owner: 'forge', repo: 'caller' } }, { setOutput() {} }, localRequire).then(() => {
+  assert.equal(process.env.EXPECT_ERROR, '');
+  assert.equal(calls, 1);
+  const event = JSON.parse(task.split('<agentic-job-event>\n')[1].split('\n</agentic-job-event>')[0]);
+  assert.equal(event.repository, process.env.ITEM_REPO || 'forge/work');
+  assert.equal(event.number, 42);
+}).catch(error => {
+  if (!process.env.EXPECT_ERROR) throw error;
+  assert.match(error.message, new RegExp(process.env.EXPECT_ERROR));
+  assert.equal(calls, 0);
+});
+"#;
+    for (item_repo, profile, error) in [
+        ("", "implement", ""),
+        ("forge/tracker", "implement", ""),
+        ("forge/tracker", "triage", ""),
+        ("forge/tracker", "research", ""),
+        ("forge/tracker", "session", ""),
+        (
+            "forge/tracker",
+            "review",
+            "item-repo is not for review or fix",
+        ),
+        ("forge/tracker", "fix", "item-repo is not for review or fix"),
+        (" forge/tracker", "implement", "Expected OWNER/NAME"),
+        ("forge/tracker/extra", "implement", "Expected OWNER/NAME"),
+    ] {
+        let output = Command::new("node")
+            .args(["-e", harness, step["with"]["script"].as_str().unwrap()])
+            .envs([
+                ("TARGET_REPO", "forge/work"),
+                ("TARGET_ITEM", "42"),
+                ("ITEM_REPO", item_repo),
+                ("PROFILE", profile),
+                ("EXPECT_ERROR", error),
+                ("SESSION", "false"),
+                ("IDLE_MINUTES", ""),
+                ("INFERENCE_REGISTER", "github-oidc"),
+                ("INFERENCE_PROVIDER", ""),
+                ("INFERENCE_API_KEY_SET", "false"),
+                ("AGENT", "opencode"),
+                ("AGENT_RUNNER", "\"ubuntu-26.04\""),
+                ("APPLY_ENVIRONMENT", "agent-apply"),
+                ("MAX_REQUESTS", "400"),
+                ("INFERENCE_URL", ""),
+                ("INFERENCE_AUDIENCE", ""),
+                ("AGENT_CONFIG_REPO", "forge/config"),
+                ("RUNNER_TEMP", "/tmp/opencode"),
+            ])
+            .output()
+            .expect("node");
+        assert!(
+            output.status.success(),
+            "{item_repo:?}/{profile}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 // Dependabot moves the tag, all three calls in one pull request, without
@@ -746,13 +1209,17 @@ fn configuration_repository_defaults_to_deployment_json_after_the_input_and_the_
         10,
         "AGENT_CONFIG_REPO: ${{ inputs.agent-config-repo || vars.AGENT_CONFIG_REPO || steps.deployment.outputs.agent-config-repo }}"
     )));
+    // Pinned by commit, unlike upstream's @main (see the wrapper).
     let target = job(&workflow, "target");
-    let deployment = "\n      - uses: jmarrero-forge/actions/deployment@";
-    assert!(target.match_indices(deployment).any(|(i, _)| {
-        target[i + deployment.len()..]
-            .split_once('\n')
-            .is_some_and(|(r, rest)| main_pin(r) && rest.starts_with("        id: deployment\n"))
-    }));
+    let pin = captures(
+        &target,
+        "\n      - uses: jmarrero-forge/actions/deployment@",
+    );
+    assert!(pin.iter().all(|r| main_pin(r)), "{pin:?}");
+    assert!(target.contains(&format!(
+        "\n      - uses: jmarrero-forge/actions/deployment@{}\n        id: deployment\n",
+        pin[0]
+    )));
     let action = read("deployment/action.yml");
     assert!(line_then(
         &action,
@@ -865,38 +1332,139 @@ fn policy_is_given_max_requests_only_from_the_target_job() {
 }
 
 #[test]
-fn tailnet_join_is_for_a_real_agent_or_a_session() {
-    assert!(job(&read(AGENTIC_JOB), "agent").contains(
-        "- name: Join the tailnet\n        if: ${{ needs.target.outputs.agent != 'fake' || needs.target.outputs.session == 'true' }}\n"
-    ));
+fn safe_output_contract_keeps_caller_bounds_counts_and_apply_token() {
+    let dispatch = read(AGENTIC_JOB);
+    let policy = job(&dispatch, "policy");
+    assert!(policy.contains(&line(
+        6,
+        "allow: ${{ inputs.kind == 'review' && needs.target.outputs.review-allow || (inputs.kind == 'fix' && inputs.fix-allow || inputs.allow) }}"
+    )));
+    assert!(policy.contains(&line(
+        6,
+        "max-outputs: ${{ inputs.kind == 'review' && '1' || '3' }}"
+    )));
+    let review = read(REVIEW);
+    let review_policy = job(&review, "policy");
+    assert!(review_policy.contains(&line(6, "max-outputs: '1'")));
+    assert!(review_policy.contains(&line(
+        6,
+        "allow: ${{ github.event_name == 'issue_comment' && 'workflow/review-command.toml' || 'workflow/review.toml' }}"
+    )));
+    for workflow in [&dispatch, &review] {
+        let apply = job(workflow, "apply");
+        assert!(apply.contains(&line(
+            6,
+            "SAFE_OUTPUTS_PAT: ${{ secrets.SAFE_OUTPUTS_PAT }}"
+        )));
+        assert!(apply.contains(&line(6, "policy: ${{ toJSON(needs.policy.outputs) }}")));
+        assert!(apply.contains(&line(6, "check: ${{ toJSON(needs.check) }}")));
+        for name in ["register", "agent", "check"] {
+            assert!(!job(workflow, name).contains("SAFE_OUTPUTS_PAT"), "{name}");
+        }
+    }
 }
 
+// The agent job has no identity token: it joins with the key the register
+// job minted, as root before anything of the agent's, for every kind.
 #[test]
-fn session_job_posts_the_endpoint_before_apply_concludes_and_only_for_a_session() {
-    let workflow = read(AGENTIC_JOB);
-    let session = job(&workflow, "session");
-    assert!(session.contains(&line(4, "needs: [target, policy]")));
-    assert!(session.contains(&line(
-        4,
-        "if: ${{ needs.policy.outputs.admitted == 'true' && needs.target.outputs.session == 'true' && needs.policy.outputs.notified == 'true' && needs.policy.outputs.notify == 'comment' && needs.policy.outputs.binary-artifact-id != '' }}"
-    )));
-    assert!(session.contains(
-        "\n    concurrency:\n      group: agentic-job-status-${{ needs.policy.outputs.notify-repo }}-${{ needs.policy.outputs.notify-item }}\n      cancel-in-progress: false\n"
+fn agent_joins_the_tailnet_with_the_register_jobs_key() {
+    let agent = job(&read(AGENT), "agent");
+    assert!(agent.contains(
+        "\n      - name: Join the tailnet\n        uses: jmarrero-forge/actions/tailscale@"
     ));
-    assert!(session.contains(&line(4, "runs-on: ubuntu-26.04")));
-    assert!(session.contains(&line(4, "continue-on-error: true")));
-    assert!(session.contains("`${{ needs.target.outputs.session-endpoint }}`"));
-    assert!(session.contains(
-        "\n          artifact-ids: ${{ needs.policy.outputs.binary-artifact-id }}\n          path: ${{ runner.temp }}/bin\n"
-    ));
-    assert!(session.contains(
-        "\n          chmod +x \"$RUNNER_TEMP/bin/agentic-job\"\n          \"$RUNNER_TEMP/bin/agentic-job\" status\n"
-    ));
-    // Only the policy binary, never an agent-uploaded executable.
-    for agents in ["actions/checkout", ".agentic-job-source", "needs.agent"] {
-        assert!(!session.contains(agents), "{agents}");
+    assert!(agent.contains(&line(10, "authkey: ${{ secrets.TAILNET_KEY }}")));
+    for file in [AGENTIC_JOB, REVIEW] {
+        let workflow = read(file);
+        let register = job(&workflow, "register");
+        assert!(register.contains(&line(10, "mint: 'true'")), "{file}");
+        assert!(
+            register.contains(&line(6, "tailnet-key: ${{ steps.tailnet.outputs.key }}")),
+            "{file}"
+        );
+        assert_eq!(
+            workflow.matches("- name: Join the tailnet").count(),
+            if file == REVIEW { 2 } else { 1 },
+            "{file}"
+        );
+        assert!(
+            job(&workflow, "agent").contains(&line(
+                6,
+                "TAILNET_KEY: ${{ needs.register.outputs.tailnet-key }}"
+            )),
+            "{file}"
+        );
     }
-    assert!(job(&workflow, "apply").contains(&line(4, "needs: [policy, agent, check, session]")));
+}
+
+// The key a re-run of only the agent job reuses, or one that expired while
+// the job waited, is refused before the join with what to do. Both
+// wrappers pass the register job's attempt and mint time; the step order
+// and the register job's outputs are review_wrapper.rs's.
+#[test]
+fn agent_refuses_a_spent_or_expired_tailnet_key_before_the_join() {
+    let agent = job(&read(AGENT), "agent");
+    let step = agent
+        .split("      - name: Check the tailnet key is this attempt's and unexpired\n")
+        .nth(1)
+        .map(|rest| rest.split("\n      - ").next().unwrap())
+        .expect("the agent job has no tailnet key check");
+    let mint = read("tailscale/mint.mjs");
+    assert_eq!(
+        captures(&mint, "export const KEY_EXPIRY_SECONDS = "),
+        ["3600;"]
+    );
+    assert!(step.contains(&line(10, "KEY_EXPIRY_SECONDS: 3600")));
+    for file in [AGENTIC_JOB, REVIEW] {
+        let call = job(&read(file), "agent");
+        for input in ["tailnet-key-attempt", "tailnet-key-minted-at"] {
+            assert!(
+                call.contains(&line(
+                    6,
+                    &format!("{input}: ${{{{ needs.register.outputs.{input} }}}}")
+                )),
+                "{file}: {input}"
+            );
+        }
+    }
+    let script = step.split("        run: |\n").nth(1).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let fresh = (now - 60).to_string();
+    let stale = (now - 3600).to_string();
+    // (minted in attempt, this attempt, mint time, error)
+    for (minted, attempt, minted_at, want) in [
+        ("2", "2", fresh.as_str(), None),
+        ("1", "1", stale.as_str(), Some("expired")),
+        ("1", "2", fresh.as_str(), Some("attempt 1's")),
+        ("1", "1", "", Some("no mint time")),
+    ] {
+        let run = Command::new("bash")
+            .args([
+                "--noprofile",
+                "--norc",
+                "-e",
+                "-o",
+                "pipefail",
+                "-c",
+                script,
+            ])
+            .env("MINTED_ATTEMPT", minted)
+            .env("GITHUB_RUN_ATTEMPT", attempt)
+            .env("MINTED_AT", minted_at)
+            .env("KEY_EXPIRY_SECONDS", "3600")
+            .output()
+            .expect("bash");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        match want {
+            None => assert!(run.status.success(), "{stdout}"),
+            Some(error) => {
+                assert_eq!(run.status.code(), Some(1), "{stdout}");
+                assert!(stdout.contains(error), "{stdout}");
+            }
+        }
+    }
 }
 
 /// Appends its arguments to CALL_LOG, each followed by a tab, one call to
@@ -910,9 +1478,7 @@ const FAKE_SUDO: &str = r#"#!/bin/sh
 // does so before the first checkout, which needs git.
 #[test]
 fn only_rhel_10_installs_git_node_and_gh_and_links_agentic_job_into_sudos_path() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let agent = job(&read(AGENTIC_JOB), "agent");
+    let agent = job(&read(AGENT), "agent");
     let step = agent
         .split("      - name: Install RHEL prerequisites\n")
         .nth(1)
@@ -932,13 +1498,6 @@ fn only_rhel_10_installs_git_node_and_gh_and_links_agentic_job_into_sudos_path()
         .map(|line| line.strip_prefix("          ").unwrap_or(line))
         .collect::<Vec<_>>()
         .join("\n");
-    let home = std::env::var_os("HOME").expect("HOME");
-    let directory = TempDir::new(Path::new(&home), "agent-prerequisites");
-    let log = directory.0.join("calls");
-    let os_release = directory.0.join("os-release");
-    let sudo = directory.0.join("sudo");
-    fs::write(&sudo, FAKE_SUDO).unwrap();
-    fs::set_permissions(&sudo, fs::Permissions::from_mode(0o700)).unwrap();
     let rhel: &[&[&str]] = &[
         &["dnf", "install", "-y", "git", "nodejs", "podman"],
         &[
@@ -955,6 +1514,244 @@ fn only_rhel_10_installs_git_node_and_gh_and_links_agentic_job_into_sudos_path()
             "/usr/bin/agentic-job",
         ],
     ];
+    check_rhel_prerequisites(&script, rhel);
+}
+
+#[test]
+fn only_rhel_10_installs_iptables_and_links_tailscale_into_sudos_path() {
+    let action = YamlLoader::load_from_str(&read("tailscale/action.yml"))
+        .unwrap()
+        .remove(0);
+    let steps = action["runs"]["steps"].as_vec().unwrap();
+    let index = |name| {
+        steps
+            .iter()
+            .position(|step| step["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("missing step {name}"))
+    };
+    let prerequisites = index("Install RHEL prerequisites");
+    assert!(prerequisites < index("Connect to the tailnet"));
+    let step = &steps[prerequisites];
+    assert_eq!(step["env"]["OS_RELEASE"].as_str(), Some("/etc/os-release"));
+    assert_eq!(step["shell"].as_str(), Some("bash"));
+    assert!(
+        step["if"].is_badvalue(),
+        "prerequisites must run on every OS"
+    );
+    check_rhel_prerequisites(
+        step["run"].as_str().expect("prerequisites run script"),
+        &[
+            &["dnf", "install", "-y", "iptables"],
+            &[
+                "ln",
+                "-sfn",
+                "/usr/local/bin/tailscale",
+                "/usr/bin/tailscale",
+            ],
+            &[
+                "ln",
+                "-sfn",
+                "/usr/local/bin/tailscaled",
+                "/usr/bin/tailscaled",
+            ],
+        ],
+    );
+}
+
+#[test]
+fn tailscale_mint_validates_before_credentials_and_uses_the_join_settings() {
+    let action = YamlLoader::load_from_str(&read("tailscale/action.yml"))
+        .unwrap()
+        .remove(0);
+    let steps = action["runs"]["steps"].as_vec().unwrap();
+    let validate = &steps[0];
+    assert_eq!(validate["name"].as_str(), Some("Check the login inputs"));
+    assert_eq!(validate["shell"].as_str(), Some("bash"));
+    assert!(validate["if"].is_badvalue());
+    for (key, input) in [("AUTHKEY", "authkey"), ("MINT", "mint")] {
+        assert_eq!(
+            validate["env"][key].as_str().unwrap(),
+            format!("${{{{ inputs.{input} }}}}")
+        );
+    }
+    for authkey in ["", "fixture-key"] {
+        for mint in ["false", "true", "yes", "", "TRUE", " true", "true\n"] {
+            let expected_error = match mint {
+                "true" if !authkey.is_empty() => {
+                    Some("mint needs the federated login, not authkey")
+                }
+                "true" | "false" => None,
+                _ => Some("mint must be true or false"),
+            };
+            let output = Command::new("bash")
+                .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c"])
+                .arg(validate["run"].as_str().unwrap())
+                .env_clear()
+                .env("AUTHKEY", authkey)
+                .env("MINT", mint)
+                .output()
+                .expect("run login validation with bash");
+            assert_eq!(
+                output.status.code(),
+                Some(i32::from(expected_error.is_some())),
+                "authkey={authkey:?}, mint={mint:?}: {output:?}"
+            );
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                expected_error.map_or_else(String::new, |e| format!("::error::{e}\n"))
+            );
+            assert!(output.stderr.is_empty());
+        }
+    }
+
+    let index = |name| {
+        steps
+            .iter()
+            .position(|step| step["name"].as_str() == Some(name))
+            .unwrap()
+    };
+    let settings = index("Choose organization settings");
+    let join = index("Connect to the tailnet");
+    let harden = index("Make tailscaled's LocalAPI root's only");
+    let mint = index("Mint a key for a later job");
+    assert!(0 < settings && settings < join && join < harden && harden < mint);
+    assert_eq!(action["inputs"]["mint"]["default"].as_str(), Some("false"));
+    assert_eq!(steps[mint]["if"].as_str(), Some("inputs.mint == 'true'"));
+    assert_eq!(steps[mint]["id"].as_str(), Some("mint"));
+    assert_eq!(
+        action["outputs"]["key"]["value"].as_str(),
+        Some("${{ steps.mint.outputs.key }}")
+    );
+    assert_eq!(
+        steps[join]["with"]["authkey"].as_str(),
+        Some("${{ inputs.authkey }}")
+    );
+    for (key, input) in [
+        ("OAUTH_CLIENT_ID", "oauth-client-id"),
+        ("AUDIENCE", "audience"),
+        ("TAGS", "tags"),
+    ] {
+        assert_eq!(
+            steps[mint]["env"][key].as_str().unwrap(),
+            format!("${{{{ steps.settings.outputs.{input} }}}}")
+        );
+        assert_eq!(
+            steps[join]["with"][input].as_str().unwrap(),
+            format!("${{{{ inputs.authkey == '' && steps.settings.outputs.{input} || '' }}}}")
+        );
+    }
+}
+
+#[test]
+fn tailscale_hardening_runs_after_successful_and_failed_joins() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let action = YamlLoader::load_from_str(&read("tailscale/action.yml"))
+        .unwrap()
+        .remove(0);
+    let steps = action["runs"]["steps"].as_vec().unwrap();
+    let index = steps
+        .iter()
+        .position(|step| step["name"].as_str() == Some("Make tailscaled's LocalAPI root's only"))
+        .expect("LocalAPI hardening step");
+    assert_eq!(steps[index - 1]["id"].as_str(), Some("join"));
+    let step = &steps[index];
+    assert_eq!(step["if"].as_str(), Some("always()"));
+    assert_eq!(step["shell"].as_str(), Some("bash"));
+    assert_eq!(
+        step["env"]["JOINED"].as_str(),
+        Some("${{ steps.join.outcome == 'success' }}")
+    );
+
+    // Record exact argv as JSON; never invoke sudo or change host permissions.
+    const SUDO: &str = r#"#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ['CALL_LOG'], 'a') as log: log.write(json.dumps(args) + '\n')
+if args[0] == 'test': sys.exit(0 if os.environ['CLI_EXISTS' if args[1] == '-f' else 'DIRECTORY_EXISTS'] == 'true' else 1)
+if args[0] == 'chmod' and args[2] == os.environ['FAIL_CHMOD']: sys.exit(1)
+if args[0] == 'stat': print('700 root:root')
+"#;
+    let home = std::env::var_os("HOME").expect("HOME");
+    let directory = TempDir::new(Path::new(&home), "tailscale-hardening");
+    let sudo = directory.0.join("sudo");
+    fs::write(&sudo, SUDO).unwrap();
+    fs::set_permissions(&sudo, fs::Permissions::from_mode(0o700)).unwrap();
+    let log = directory.0.join("calls");
+    let path = std::env::join_paths(
+        std::iter::once(directory.0.clone())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    const CLI: &str = "/usr/local/bin/tailscale";
+    const SOCKET_DIR: &str = "/var/run/tailscale";
+    for joined in [false, true] {
+        for (cli, socket_dir, fail_chmod) in [
+            (true, true, ""),
+            (false, false, ""),
+            (true, false, ""),
+            (false, true, ""),
+            (true, true, CLI),
+            (true, true, SOCKET_DIR),
+        ] {
+            fs::write(&log, "").unwrap();
+            let result = Command::new("bash")
+                .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c"])
+                .arg(step["run"].as_str().expect("hardening script"))
+                .env("PATH", &path)
+                .env("CALL_LOG", &log)
+                .env("JOINED", joined.to_string())
+                .env("CLI_EXISTS", cli.to_string())
+                .env("DIRECTORY_EXISTS", socket_dir.to_string())
+                .env("FAIL_CHMOD", fail_chmod)
+                .output()
+                .expect("bash");
+            let scenario =
+                format!("joined={joined}, cli={cli}, directory={socket_dir}, fail={fail_chmod}");
+            assert_eq!(
+                result.status.code(),
+                Some(if fail_chmod.is_empty() { 0 } else { 1 }),
+                "{scenario}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let mut expected = vec![vec!["test", "-f", CLI]];
+            if cli {
+                expected.push(vec!["chmod", "0700", CLI]);
+            }
+            if fail_chmod != CLI {
+                expected.push(vec!["test", "-d", SOCKET_DIR]);
+                if socket_dir {
+                    expected.push(vec!["chmod", "0700", SOCKET_DIR]);
+                    if fail_chmod != SOCKET_DIR {
+                        expected.push(vec!["stat", "-c", "%a %U:%G", SOCKET_DIR]);
+                        if joined {
+                            expected.push(vec![CLI, "status", "--self"]);
+                        }
+                    }
+                }
+            }
+            let calls: Vec<Vec<String>> = fs::read_to_string(&log)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("sudo argv record"))
+                .collect();
+            assert_eq!(calls, expected, "{scenario}");
+        }
+    }
+}
+
+// Run the actual shell from each caller, not a Rust model of its OS check.
+// The sudo double records ordered argv without installing or linking anything.
+fn check_rhel_prerequisites(script: &str, rhel: &[&[&str]]) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = std::env::var_os("HOME").expect("HOME");
+    let directory = TempDir::new(Path::new(&home), "rhel-prerequisites");
+    let log = directory.0.join("calls");
+    let os_release = directory.0.join("os-release");
+    let sudo = directory.0.join("sudo");
+    fs::write(&sudo, FAKE_SUDO).unwrap();
+    fs::set_permissions(&sudo, fs::Permissions::from_mode(0o700)).unwrap();
     let path = format!(
         "{}:{}",
         directory.0.display(),
@@ -968,12 +1765,16 @@ fn only_rhel_10_installs_git_node_and_gh_and_links_agentic_job_into_sudos_path()
             rhel,
         ),
         (Some("ID=rhel\nVERSION_ID=10\n"), rhel),
+        (Some("ID=rhel\nVERSION_ID=10.1\n"), rhel),
+        (Some("NAME=Ubuntu\nID=ubuntu\nVERSION_ID=24.04\n"), &[]),
         (
             Some("NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.04\"\n"),
             &[],
         ),
         (Some("ID=\"rhel\"\nVERSION_ID=\"9.6\"\n"), &[]),
         (Some("ID=\"rhel\"\nVERSION_ID=\"100\"\n"), &[]),
+        (Some("ID=rhel\n"), &[]),
+        (Some("VERSION_ID=10\n"), &[]),
         (
             Some("ID=\"centos\"\nID_LIKE=\"rhel fedora\"\nVERSION_ID=\"10\"\n"),
             &[],
@@ -990,7 +1791,7 @@ fn only_rhel_10_installs_git_node_and_gh_and_links_agentic_job_into_sudos_path()
         fs::write(&log, "").unwrap();
         let result = Command::new("bash")
             .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c"])
-            .arg(&script)
+            .arg(script)
             .env("PATH", &path)
             .env("CALL_LOG", &log)
             .env("OS_RELEASE", &os_release)

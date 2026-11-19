@@ -6,9 +6,15 @@ lint:
 test-lint:
     {{ just_executable() }} --justfile lint/Justfile test
 
-# secure-host's egress probe; lint/tests/secure_host_action.rs tests the action's steps.
+# Focused offline probe tests (also included in test-lint); Node is still required.
 test-secure-host:
-    node --test secure-host/*.test.mjs
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-{{ cache_directory() }}/forge-lint}" cargo test --locked --manifest-path lint/Cargo.toml --test egress_probe --test read_probe
+
+# Rust replacements, before the first pinned release is wired into actions.
+test-action-scripts:
+    cargo test --locked --manifest-path action-scripts/Cargo.toml
+    cargo clippy --locked --manifest-path action-scripts/Cargo.toml --all-targets -- -D warnings
+    cargo fmt --manifest-path action-scripts/Cargo.toml --check
 
 renovate := "renovate@44.198.3"
 
@@ -17,7 +23,7 @@ renovate := "renovate@44.198.3"
 # downloads Renovate, so CI does not run this.
 test-renovate:
     npx --yes --package {{ renovate }} -- renovate-config-validator --strict --no-global renovate/runners.json .github/renovate.json
-    npx --yes --package {{ renovate }} -- node renovate/dry-run.mjs
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-{{ cache_directory() }}/forge-lint}" npx --yes --package {{ renovate }} -- cargo test --locked --manifest-path lint/Cargo.toml --test renovate_dry_run -- --ignored --nocapture
 
 # The proxy, not an origin error or timeout, must refuse the write; and
 # with ALLOWED, a path of example.com an `egress-policy` rule allows, let
@@ -59,12 +65,13 @@ secure-host-options want:
     if systemctl is-active --quiet docker.service; then echo "::error::docker is still running"; exit 1; fi
 
 # The cloud metadata service (Azure's, on GitHub's hosted runners) answers
-# before the action and not after it.
+# before the action and not after it. An HTTP error (such as 401) is still
+# an answer: only a transport failure proves the metadata endpoint unreachable.
 secure-host-metadata want:
     #!/usr/bin/env bash
     set -euo pipefail
     url="http://169.254.169.254/metadata/instance?api-version=2021-02-01"
-    if curl -sS --fail --max-time 10 -H Metadata:true -o /dev/null "$url"; then answered=yes; else answered=no; fi
+    if curl -sS --max-time 10 -H Metadata:true -o /dev/null "$url"; then answered=yes; else answered=no; fi
     case "{{ want }}-$answered" in
       before-yes | after-no) ;;
       *) echo "::error::{{ want }} the action, the metadata service answered: $answered"; exit 1 ;;

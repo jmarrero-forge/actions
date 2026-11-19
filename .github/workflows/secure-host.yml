@@ -17,35 +17,51 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Exercise the wrappers' actual prepare -> config --host -> forwarder
-  # sequence on a fresh VM. No inference, tailnet credentials or agent
-  # uploads: prove the sandbox's CLI matches the policy binary too.
+  # A scripted dispatch through the wrappers' agent job, cgwalters-agent.yml,
+  # on a fresh VM: prepare, agentic-job's runner-user admission, config
+  # --host --prepared, sandbox prepare and the pinned host action, then
+  # the setup script and run's own
+  # proof that the host is secured, all as the runner's user; then the
+  # pinned scripted agent (agentic-job's `fake`, comment profile) through
+  # run with no GitHub token, and its handback through the pinned check.
+  # Deterministic: no model, inference, tailnet credentials or secrets,
+  # and no apply, so nothing is published. The wrappers keep refusing
+  # `fake` from callers; this is the repository's own base configuration.
   wrapper-policy:
     permissions:
       actions: read
       contents: read
-    uses: cgwalters-forge/agentic-job/.github/workflows/policy.yml@57119eeffa17ea41b383cfdaf8370b8abeba8868 # v0.6.9
+    uses: cgwalters-forge/agentic-job/.github/workflows/policy.yml@740ff7ff4dcef59dcb0619eb14d0e357c3193f62 # v0.6.15
     with:
       id: wrapper-smoke
       runner: '"ubuntu-26.04"'
       repo: jmarrero-forge/actions
       allow: workflow/review.toml
       kind: analysis
-      outputs: noop
+      outputs: add_comment,noop
       max-outputs: '1'
+      # Any issue would do: check consults none, and no apply job posts.
+      comment-target: '103'
+      notify: none
+      agent: fake
+      fake-profile: comment
       max-requests: '0'
       budget: '1'
-      task: Prove the installed binary can execute as the sandbox user.
+      task: Prove the agent job's host is secured for the runner's user and hand back a checked comment.
       config: .agentic-job-source/secure-host/hosted.toml
       artifact-prefix: wrapper-smoke-
 
-  wrapper-sandbox:
+  wrapper-runner:
     needs: wrapper-policy
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read
       actions: read
+    outputs:
+      exit: ${{ steps.run.outputs.exit }}
+      safe-outputs-artifact-id: ${{ steps.run.outputs.safe-outputs-artifact-id }}
+      safe-outputs-artifact-digest: ${{ steps.run.outputs.safe-outputs-artifact-digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,31 +69,96 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: cgwalters-forge/agentic-job
-          ref: 57119eeffa17ea41b383cfdaf8370b8abeba8868 # v0.6.9
+          ref: 740ff7ff4dcef59dcb0619eb14d0e357c3193f62 # v0.6.15
           path: .agentic-job-source
           persist-credentials: false
-      - name: Create the job directory
-        run: install -d -m 0711 /var/tmp/agentic-job
       - uses: ./.agentic-job-source/prepare
         with:
-          job-dir: /var/tmp/agentic-job
           binary-artifact-id: ${{ needs.wrapper-policy.outputs.binary-artifact-id }}
           policy-artifact-id: ${{ needs.wrapper-policy.outputs.policy-artifact-id }}
-      - name: Keep the job inputs private
-        run: |
-          chmod 0600 /var/tmp/agentic-job/*
-          chmod 0755 /var/tmp/agentic-job/agentic-job
+      - name: Admit the runner-user configuration
+        env:
+          CALLER_PRIVATE: ${{ toJSON(github.event.repository.private) }}
+          AGENT_USER: runner
+        run: python3 .agentic-job-source/workflow/runner-setup.py admit
       - name: Check inference proxy reachability
-        run: agentic-job secure-host inference /var/tmp/agentic-job/config.toml
+        run: agentic-job secure-host inference .agentic-job/config.toml
       - name: The host's configuration
-        run: agentic-job config --host --from /var/tmp/agentic-job/config.toml --string sandbox.env.PATH=/var/tmp/agentic-job:/usr/local/bin:/usr/bin:/bin > "$RUNNER_TEMP/agentic-job-host.toml"
-      - uses: ./.agentic-job-source/secure-host
+        id: host-config
+        run: |
+          install -D -m 0755 .agentic-job/agentic-job "$RUNNER_TEMP/agentic-job-bin/agentic-job"
+          agentic-job config --host --prepared --from .agentic-job/config.toml --string "host.env.PATH=$RUNNER_TEMP/agentic-job-bin:/usr/local/bin:/usr/bin:/bin" > "$RUNNER_TEMP/agentic-job-host.toml"
+          python3 -c 'import sys, tomllib; c = tomllib.load(open(sys.argv[1], "rb")); print("egress=" + ("write-policy" if c.get("egress", {}).get("write-policy", False) else "off"))' "$RUNNER_TEMP/agentic-job-host.toml" >> "$GITHUB_OUTPUT"
+      - name: Prepare the agents and trusted helper
+        run: sudo /usr/local/bin/agentic-job sandbox prepare --config "$RUNNER_TEMP/agentic-job-host.toml"
+      - uses: cgwalters-forge/actions/secure-host@f5fb535d93f9451a5de1cbc13e61921bb67782ee # from main
         with:
           config: ${{ runner.temp }}/agentic-job-host.toml
-      # The same path run/action.yml executes with the wrappers' job-dir,
-      # through the forwarder's v0.6.4 image helper, not unrestricted sudo.
-      - name: The sandbox CLI matches the policy binary
-        run: python3 workflow/sandbox-binary-check.py
+          egress: ${{ steps.host-config.outputs.egress }}
+      - name: The setup script
+        env:
+          AGENT_HOME: ${{ runner.temp }}/agent-home
+        run: python3 .agentic-job-source/workflow/runner-setup.py setup
+      # What run/action.yml checks before it starts the agent; then that
+      # the runner's user has lost sudo, and that the agentic-job its
+      # commands find on the agent's PATH, the installed configuration's,
+      # is the policy binary run starts, not the image's older copy.
+      - name: The runner's user runs the policy binary on a secured host
+        run: |
+          python3 -c 'import sys, tomllib; c = tomllib.load(open("/etc/agentic-job/config.toml", "rb")); sys.exit(0 if c.get("host", c.get("sandbox", {})).get("lock-runner", True) is True else "run requires a locked host")'
+          agentic-job sandbox check --unless-passed
+          if sudo -n true 2> /dev/null; then echo "::error::the runner's user still has sudo"; exit 1; fi
+          chmod 0755 .agentic-job/agentic-job
+          path=$(python3 -c 'import tomllib; c = tomllib.load(open("/etc/agentic-job/config.toml", "rb")); print(c.get("host", c.get("sandbox", {}))["env"]["PATH"])')
+          found=$(env -i PATH="$path" sh -c 'command -v agentic-job')
+          echo "policy binary: $(.agentic-job/agentic-job --version); on the agent's PATH: $found, $("$found" --version)"
+          cmp "$found" .agentic-job/agentic-job || { echo "::error::the agent's PATH finds $found, not the policy binary"; exit 1; }
+      # The agent job's run step, with the empty GitHub token a review
+      # gets and no run token: the scripted agent reaches no proxy.
+      - id: run
+        timeout-minutes: 10
+        uses: ./.agentic-job-source/run
+        with:
+          runner-home: ${{ runner.temp }}/agent-home
+          github-token: ''
+
+  # The wrappers' check, at their pin, on the scripted handback. GitHub
+  # validates detect's `id-token` request even though it uses it only
+  # with AGENTIC_JOB_DETECT_MODEL set, which this repository leaves unset
+  # (setting it would run a model here); nothing of the agent's runs there.
+  wrapper-check:
+    needs: [wrapper-policy, wrapper-runner]
+    if: ${{ needs.wrapper-runner.outputs.safe-outputs-artifact-id != '' }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    uses: cgwalters-forge/agentic-job/.github/workflows/check.yml@740ff7ff4dcef59dcb0619eb14d0e357c3193f62 # v0.6.15
+    with:
+      policy: ${{ toJSON(needs.wrapper-policy.outputs) }}
+      safe-outputs-artifact-id: ${{ needs.wrapper-runner.outputs.safe-outputs-artifact-id }}
+      safe-outputs-artifact-digest: ${{ needs.wrapper-runner.outputs.safe-outputs-artifact-digest }}
+
+  # The scripted dispatch passes only if the agent ended well and check
+  # accepted its one comment, with no patch.
+  wrapper-scripted-dispatch:
+    needs: [wrapper-runner, wrapper-check]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: The scripted handback was checked
+        env:
+          EXIT: ${{ needs.wrapper-runner.outputs.exit }}
+          CHECK: ${{ needs.wrapper-check.result }}
+          CHECKED: ${{ needs.wrapper-check.outputs.artifact-id }}
+          REFUSAL: ${{ needs.wrapper-check.outputs.refusal }}
+          PATCH: ${{ needs.wrapper-check.outputs.has-patch }}
+        run: |
+          echo "agent exit $EXIT, check $CHECK, checked upload ${CHECKED:-none}, patch ${PATCH:-none}"
+          [[ "$EXIT" == 0 && "$CHECK" == success && "$CHECKED" =~ ^[1-9][0-9]*$ && -z "$REFUSAL" && "$PATCH" != true ]] ||
+            { echo "::error::the scripted dispatch did not hand back a checked comment; check's log has any refusal"; exit 1; }
 
   # The README's example: an untrusted job with nothing worth stealing,
   # whose output a second job takes by artifact ID and digest, as data.
@@ -93,7 +174,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
           tool: just@1.58.0
       - run: just secure-host-root before
@@ -103,10 +184,7 @@ jobs:
       - name: Another process's environment is readable before the action
         env:
           SECURE_HOST_READ_PROBE: not-a-secret
-        run: |
-          setsid /usr/bin/sleep 600 < /dev/null > /dev/null 2>&1 &
-          echo "$!" > "$RUNNER_TEMP/secure-host-read-probe.pid"
-          grep -qxzF SECURE_HOST_READ_PROBE=not-a-secret "/proc/$!/environ"
+        run: node secure-host/read-probe.mjs
       - uses: ./secure-host
         with:
           egress: write-policy
@@ -177,7 +255,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
           tool: just@1.58.0
       - run: just secure-host-options before
@@ -199,7 +277,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
           tool: just@1.58.0
       - uses: ./secure-host
@@ -225,7 +303,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
           tool: just@1.58.0
       - uses: ./secure-host
@@ -251,9 +329,93 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
           tool: just@1.58.0
       - run: just secure-host-world-write before
       - uses: ./secure-host
       - run: just secure-host-world-write after
+
+  # agentic-job's `confined` job against the pinned image instead of a
+  # source build: a `run:` step and a JavaScript action's main and post
+  # steps try sudo, docker, a root-owned world-writable file, the metadata
+  # service, an earlier step's process's environment, their parent's
+  # environment, memory and ptrace, a forced core dump of a child of their
+  # own, the Worker's environment and dump and its diagnostic sockets, and
+  # each must fail; before the action each must work. The control is the
+  # release binary of the image's source, by digest: bump it with the pin.
+  confined:
+    name: Confined run step and JavaScript action main and post steps
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      orphan: ${{ steps.orphan.outputs.pid }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Every probe is a later step than this; the runner's cleanup must
+      # still end it (confined-cleanup).
+      - name: Leave a process running
+        id: orphan
+        run: |
+          sleep infinity > /dev/null 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/confine-orphan.pid"
+          echo "pid=$!" >> "$GITHUB_OUTPUT"
+      # Outside setup's walk: only the access-time policy refuses it later.
+      - name: Leave a world-writable root file
+        run: sudo install -m 0666 -o root -g root /dev/null /var/tmp/agentic-job-confine-root-file
+      # At Yama scope 0 the control's ptrace of its parent works, so the
+      # later refusal is the action's, which sets 1.
+      - name: Let a process attach to any of its user's
+        run: sudo sysctl -q -w kernel.yama.ptrace_scope=0
+      - name: Before the lock each route works (control)
+        env:
+          URL: https://github.com/cgwalters-forge/agentic-job/releases/download/v0.6.14/secure-host-x86_64-unknown-linux-musl
+          SHA256: 4234907373903754ccacc8b6090c414b43d46329d4162f380626c17fe5322381
+        run: |
+          bin=$RUNNER_TEMP/secure-host-bin
+          curl -fsSL --retry 3 -o "$bin" "$URL"
+          echo "$SHA256  $bin" | sha256sum -c --quiet -
+          chmod 0755 "$bin"
+          "$bin" probe control before
+      - uses: ./secure-host
+      - name: A run step is confined
+        run: secure-host probe confined run-step
+      # Its post step runs after the job's last step and fails the job if
+      # a route is open.
+      - name: The JavaScript action main and post steps are confined
+        uses: cgwalters-forge/agentic-job/.github/actions/confine-probe@740ff7ff4dcef59dcb0619eb14d0e357c3193f62 # v0.6.15
+
+  # The runner's Worker, exempt from the runner-read rule, still ends the
+  # process confined left running, and logs so; read as data.
+  confined-cleanup:
+    needs: confined
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: The runner ended the orphan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PID: ${{ needs.confined.outputs.orphan }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+          NAME: Confined run step and JavaScript action main and post steps
+        run: |
+          [[ "$PID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::no orphan pid from confined"; exit 1; }
+          job=$(gh api --paginate "repos/$REPO/actions/runs/$RUN/attempts/$ATTEMPT/jobs" --jq ".jobs[] | select(.name == env.NAME) | .id")
+          [[ "$job" =~ ^[0-9]+$ ]] || { echo "::error::no single confined job in this attempt"; exit 1; }
+          # A completed job's log can take a moment to be served.
+          for try in 1 2 3 4 5 6; do
+            if gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$job/logs" > "$RUNNER_TEMP/confined.log"; then
+              grep -qF "Terminate orphan process: pid ($PID) (sleep)" "$RUNNER_TEMP/confined.log" && exit 0
+              grep -qF 'Cleaning up orphan processes' "$RUNNER_TEMP/confined.log" && break
+            fi
+            [ "$try" = 6 ] || sleep 10
+          done
+          echo "::error::the runner's cleanup did not end orphan pid $PID"; exit 1

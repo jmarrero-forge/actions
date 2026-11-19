@@ -1,0 +1,262 @@
+# The agent job of both wrappers, cgwalters-agentic-job.yml and
+# cgwalters-review.yml, which call it by local path, so at their own
+# commit. It is agentic-job's agent.yml (at the release the wrappers pin)
+# with this deployment's tailnet join, in a file of its own for the same
+# reason: the register job's run token and tailnet key arrive as secrets,
+# which GitHub masks in every log of this job, and nothing but a call's
+# `secrets:` can make another job's output one (agentic-job's
+# docs/workflow.md, "The run token").
+#
+# The agent is the runner's user, as every step after secure-host is, the
+# only agent user since agentic-job#2989. It can read whatever the job
+# holds, so the job holds nothing but the run token, which is the agent's
+# to use anyway, and the tailnet key, spent by the join before anything of
+# the agent's runs. No `id-token`: with it, anything that became the
+# runner's user could mint identity tokens for any audience; the register
+# job, which has it, joined, minted the key and registered the run. No
+# repository secret comes here: an inference key or MCP credential would
+# need a second user, which `run` refuses.
+# The independent prose call uses this same runner and single-use join boundary.
+name: cgwalters-agent
+
+on:
+  workflow_call:
+    inputs:
+      prose:
+        description: Prepare bounded advisory inputs after hardening, before run
+        type: boolean
+        default: false
+      policy:
+        description: >-
+          `toJSON(needs.policy.outputs)` of the wrapper's policy.yml call: the caller's commit,
+          the source of the binary and the trusted upload IDs
+        type: string
+        required: true
+      runner:
+        description: The runner the agent runs on, as JSON
+        type: string
+        required: true
+      github-reads:
+        description: Give the agent this job's own read-only GitHub token as GH_TOKEN
+        type: boolean
+        required: true
+      tailnet-key-attempt:
+        description: The run attempt whose register job minted TAILNET_KEY
+        type: string
+        required: true
+      tailnet-key-minted-at:
+        description: When, in seconds since the epoch, the register job minted TAILNET_KEY (at most)
+        type: string
+        required: true
+    secrets:
+      # The register job's `agentic-job register` output: the broker's run
+      # token, narrow, capped and expiring. Only `run` gets it.
+      INFERENCE_RUN_TOKEN:
+        required: true
+      # The register job's single-use, ephemeral tailnet key
+      # (tailscale/README.md), given to the join alone, which spends it.
+      TAILNET_KEY:
+        required: true
+    outputs:
+      exit:
+        value: ${{ jobs.agent.outputs.exit }}
+      failure-class:
+        value: ${{ jobs.agent.outputs.failure-class }}
+      over-budget:
+        value: ${{ jobs.agent.outputs.over-budget }}
+      stopped-early:
+        value: ${{ jobs.agent.outputs.stopped-early }}
+      cost:
+        value: ${{ jobs.agent.outputs.cost }}
+      secret-at:
+        value: ${{ jobs.agent.outputs.secret-at }}
+      safe-outputs-artifact-id:
+        value: ${{ jobs.agent.outputs.safe-outputs-artifact-id }}
+      safe-outputs-artifact-digest:
+        value: ${{ jobs.agent.outputs.safe-outputs-artifact-digest }}
+      job:
+        value: ${{ jobs.agent.outputs.job }}
+
+permissions: {}
+
+jobs:
+  agent:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: ${{ inputs.prose && 15 || 360 }}
+    # Read only, and nothing more: `run` hands this job's token to the
+    # agent for GitHub reads, and no check sees what it was granted.
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      actions: read
+    outputs:
+      exit: ${{ steps.run.outputs.exit }}
+      failure-class: ${{ steps.run.outputs.failure-class }}
+      over-budget: ${{ steps.run.outputs.over-budget }}
+      stopped-early: ${{ steps.run.outputs.stopped-early }}
+      cost: ${{ steps.run.outputs.cost }}
+      secret-at: ${{ steps.run.outputs.secret-at }}
+      safe-outputs-artifact-id: ${{ steps.run.outputs.safe-outputs-artifact-id }}
+      safe-outputs-artifact-digest: ${{ steps.run.outputs.safe-outputs-artifact-digest }}
+      # This job's ID, for a review's footer to link.
+      job: ${{ job.check_run_id }}
+    steps:
+      # The bootc-dev RHEL 10 runners lack what the steps below assume: git,
+      # without which checkout falls back to the REST API and prepare sees
+      # no commit; node, for the tailscale action; gh, from EPEL, for run's
+      # public-repository check. And sudo's secure_path omits
+      # /usr/local/bin, where prepare installs agentic-job; the link
+      # dangles until it does. Elsewhere, Ubuntu included, nothing runs.
+      - name: Install RHEL prerequisites
+        env:
+          OS_RELEASE: /etc/os-release
+        run: |
+          if ! test -r "$OS_RELEASE"; then exit 0; fi
+          # shellcheck source=/dev/null
+          release=$(. "$OS_RELEASE" && echo "${ID:-} ${VERSION_ID:-}")
+          case "$release" in
+            "rhel 10" | "rhel 10."*) ;;
+            *) exit 0 ;;
+          esac
+          sudo dnf install -y git nodejs podman
+          sudo dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm
+          sudo dnf install -y gh
+          sudo ln -sfn /usr/local/bin/agentic-job /usr/bin/agentic-job
+      # The calling repository at the policy job's commit, for the setup
+      # script the configuration names; never a pull request's head.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ fromJSON(inputs.policy).ref }}
+          persist-credentials: false
+      # Fail closed before running anything of the source: an empty output
+      # would make checkout fall back to the calling repository or to the
+      # default branch, unreleased code run as root here. The expected
+      # repository is the one the wrappers' policy `uses:` names
+      # (lint/tests/wrappers.rs).
+      - name: The policy call's source repository
+        env:
+          SOURCE_REPOSITORY: ${{ fromJSON(inputs.policy).source-repository }}
+          SOURCE_SHA: ${{ fromJSON(inputs.policy).source-sha }}
+          EXPECTED_REPOSITORY: cgwalters-forge/agentic-job
+        run: |
+          echo "$SOURCE_REPOSITORY at $SOURCE_SHA"
+          [[ "$SOURCE_REPOSITORY" == "$EXPECTED_REPOSITORY" && "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo "::error::the policy call is not $EXPECTED_REPOSITORY at a full commit"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ fromJSON(inputs.policy).source-repository }}
+          ref: ${{ fromJSON(inputs.policy).source-sha }}
+          path: .agentic-job-source
+          persist-credentials: false
+      - uses: ./.agentic-job-source/prepare # zizmor: ignore[self-repository] Policy-selected pinned source, never head code.
+        with:
+          binary-artifact-id: ${{ fromJSON(inputs.policy).binary-artifact-id }}
+          policy-artifact-id: ${{ fromJSON(inputs.policy).policy-artifact-id }}
+      # agentic-job's own admission of a runner-user run, before anything
+      # privileged of ours: a private caller or target, an api-key or MCP
+      # configuration, and a session's listener are refused here.
+      - name: Admit the runner-user configuration
+        env:
+          CALLER_PRIVATE: ${{ toJSON(github.event.repository.private) }}
+          AGENT_USER: runner
+        run: python3 .agentic-job-source/workflow/runner-setup.py admit
+      # Re-running only a failed agent job reuses the register job's
+      # outputs, a key the first attempt spent, and a review queued behind
+      # another can hold its key past expiry: either way the join would
+      # fail with Tailscale's bare refusal. Say what to do instead.
+      # KEY_EXPIRY_SECONDS is tailscale/mint.mjs's.
+      - name: Check the tailnet key is this attempt's and unexpired
+        env:
+          MINTED_ATTEMPT: ${{ inputs.tailnet-key-attempt }}
+          MINTED_AT: ${{ inputs.tailnet-key-minted-at }}
+          KEY_EXPIRY_SECONDS: 3600
+        run: |
+          [[ "$MINTED_AT" =~ ^[0-9]+$ ]] || { echo "::error::no mint time for the tailnet key"; exit 1; }
+          if [[ "$MINTED_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]]; then
+            echo "::error::the tailnet key is attempt $MINTED_ATTEMPT's, whose join spends it: re-run all jobs, not only failed ones"; exit 1
+          fi
+          if (( $(date +%s) - MINTED_AT >= KEY_EXPIRY_SECONDS )); then
+            echo "::error::the tailnet key expired while this job waited to start: re-run all jobs"; exit 1
+          fi
+      # Our one privileged network step, as root before anything of the
+      # agent's is on the machine, with the register job's key, which the
+      # join spends: whatever is still valid after secure-host is the
+      # agent's. Pinned: main must not change privileged code behind a
+      # caller's reviewed wrapper pin. Renovate moves it (renovate.json).
+      - name: Join the tailnet
+        uses: jmarrero-forge/actions/tailscale@a7920986be9954fecc02147f8293a86c3d50db39 # from main
+        with:
+          authkey: ${{ secrets.TAILNET_KEY }}
+          hostname: agentic-job-${{ github.run_id }}-${{ github.run_attempt }}-agent
+      # Fail on a missing proxy route before setup, not in its probes.
+      # This TCP check sends no credentials.
+      - name: Check inference proxy reachability
+        run: agentic-job secure-host inference .agentic-job/config.toml
+      # The policy job's configuration for the host, by its binary: a
+      # host's file has no `setup.script`, which the runner's user runs
+      # below, after secure-host (agentic-job#2989). The pinned image
+      # installs its own, older agentic-job in /usr/local/bin, and the
+      # agent's commands (`agentic-job handback ...`) must find the policy
+      # binary that `run` starts instead: a copy of it, in a directory of
+      # its own, first on the agent's PATH. Declare the agent tables for
+      # sandbox prepare, which handles them before the host image runs.
+      # The action overrides write-policy from its input, so forward the
+      # generated configuration's value rather than defaulting it off.
+      - name: The host's configuration
+        id: host-config
+        run: |
+          install -D -m 0755 .agentic-job/agentic-job "$RUNNER_TEMP/agentic-job-bin/agentic-job"
+          agentic-job config --host --prepared --from .agentic-job/config.toml --string "host.env.PATH=$RUNNER_TEMP/agentic-job-bin:/usr/local/bin:/usr/bin:/bin" > "$RUNNER_TEMP/agentic-job-host.toml"
+          python3 -c 'import sys, tomllib; c = tomllib.load(open(sys.argv[1], "rb")); print("egress=" + ("write-policy" if c.get("egress", {}).get("write-policy", False) else "off"))' "$RUNNER_TEMP/agentic-job-host.toml" >> "$GITHUB_OUTPUT"
+      # Every mirror in the runner's apt-mirrors.txt (archive and security
+      # alike) is an ubuntu.com name, so Canonical's DNS outage of 2026-11-11
+      # failed secure-host's package install on every run
+      # (agentic-job#3419). These mirror the same signed archive, which apt
+      # still checks against the Ubuntu keys, outside Canonical's DNS: Azure's
+      # own load balancer behind azure.archive.ubuntu.com (Azure DNS,
+      # http only), Princeton, kernel.org and Waterloo. At lower priorities
+      # apt tries them only after the runner's own mirrors. On resolute that
+      # covers arm64 too; RHEL hosts have no mirror list, so nothing changes.
+      - name: Add last-resort Ubuntu mirrors
+        run: |
+          list=/etc/apt/apt-mirrors.txt
+          if [ -f "$list" ] && grep -qE '^https?://(archive|security)\.ubuntu\.com/ubuntu' "$list" &&
+            ! grep -q 'mirrors\.edge\.kernel\.org' "$list"; then
+            printf '%s\tpriority:%s\n' \
+              http://cloud-mirror-lb.eastus.cloudapp.azure.com/ubuntu/ 4 \
+              https://mirror.math.princeton.edu/pub/ubuntu/ 5 \
+              https://mirrors.edge.kernel.org/ubuntu/ 6 \
+              https://mirror.csclub.uwaterloo.ca/ubuntu/ 7 | sudo tee -a "$list" >/dev/null
+          fi
+      - name: Prepare the agents and trusted helper
+        run: sudo /usr/local/bin/agentic-job sandbox prepare --config "$RUNNER_TEMP/agentic-job-host.toml"
+      - uses: cgwalters-forge/actions/secure-host@f5fb535d93f9451a5de1cbc13e61921bb67782ee # from main
+        with:
+          config: ${{ runner.temp }}/agentic-job-host.toml
+          egress: ${{ steps.host-config.outputs.egress }}
+      # The configuration's `setup.script`, the caller's, for a toolchain:
+      # as the runner's user, the agent's, without root, in the agent's
+      # home and with its variables.
+      - name: The setup script
+        env:
+          AGENT_HOME: ${{ runner.temp }}/agent-home
+        run: python3 .agentic-job-source/workflow/runner-setup.py setup
+      # Only trusted code and pinned checklist text; no head checkout/execution.
+      # Even preparation runs without root, write credentials or OIDC.
+      - name: Prepare bounded prose and pinned checklist
+        id: prose
+        if: inputs.prose
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node workflow/prose.mjs
+      # Head code can exfiltrate even a read-only token: a review gets none
+      # from the dispatch wrapper; pinned run fetches its head only as data.
+      - id: run
+        if: ${{ !inputs.prose || steps.prose.outputs.ready == 'true' }}
+        timeout-minutes: ${{ inputs.prose && 6 || 340 }}
+        uses: ./.agentic-job-source/run # zizmor: ignore[self-repository] Policy-selected pinned source, never head code.
+        with:
+          runner-home: ${{ runner.temp }}/agent-home
+          github-token: ${{ inputs.github-reads && github.token || '' }}
+          inference-run-token: ${{ secrets.INFERENCE_RUN_TOKEN }}

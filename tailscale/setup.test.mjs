@@ -55,16 +55,20 @@ test('an unlisted organization joins with its own client ID and tags, both', () 
   assert.throws(() => settings('other-org', { 'oauth-client-id': 'other', tags: 'tag:a\ninjected=value' }), /single-line/);
 });
 
-// The wrappers pass the calling repository's variables, never a
-// dispatcher's input, so that another deployment sets its login once.
+// Each wrapper's register job, the one federated join, passes the calling
+// repository's variables, never a dispatcher's input, so that another
+// deployment sets its login once; the agent job joins with its key.
 test('both wrappers join with the repository variables for the login', () => {
+  const read = file => readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8');
   for (const file of ['cgwalters-agentic-job.yml', 'cgwalters-review.yml']) {
-    const text = readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8');
-    const join = text.split('- name: Join the tailnet\n')[1].split(/\n {6}- /)[0];
+    const join = read(file).split('- name: Join the tailnet and mint the agent job\'s key\n')[1]
+      .split(/\n {6}- /)[0].split('\n        with:\n')[1];
     assert.match(join, /\n {10}oauth-client-id: \$\{\{ vars\.AGENTIC_JOB_TAILSCALE_OAUTH_CLIENT_ID \}\}\n/, file);
     assert.match(join, /\n {10}tags: \$\{\{ vars\.AGENTIC_JOB_TAILSCALE_TAGS \}\}(\n|$)/, file);
     assert.doesNotMatch(join, /inputs\./, file);
   }
+  const agent = read('cgwalters-agent.yml').split('- name: Join the tailnet\n')[1].split(/\n {6}- /)[0];
+  assert.doesNotMatch(agent, /oauth-client-id|vars\.|inputs\./);
 });
 
 test('the setup subprocess appends outputs and rejects injection before writing', () => {
